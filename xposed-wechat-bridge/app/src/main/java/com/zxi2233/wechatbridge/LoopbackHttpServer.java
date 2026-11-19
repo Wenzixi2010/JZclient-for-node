@@ -17,8 +17,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 /**
  * Small HTTP/1.1 server bound to 127.0.0.1 only. It intentionally supports
@@ -33,10 +31,12 @@ final class LoopbackHttpServer {
 
     private static final int MAX_HEADERS_BYTES = 16 * 1024;
     private static final int MAX_BODY_BYTES = 2 * 1024;
+    private static final int MAX_ACTIVE_CONNECTIONS = 32;
+    private static final int REQUEST_SOCKET_TIMEOUT_MS = 3_000;
 
     private final RequestRegistry registry;
     private final Listener listener;
-    private final ExecutorService workers = Executors.newFixedThreadPool(3);
+    private final Map<Socket, Boolean> sockets = new HashMap<>();
     private volatile boolean running;
     private ServerSocket serverSocket;
 
@@ -60,7 +60,24 @@ final class LoopbackHttpServer {
         while (running) {
             try {
                 Socket socket = serverSocket.accept();
-                workers.execute(() -> serve(socket));
+                synchronized (sockets) {
+                    if (!running || sockets.size() >= MAX_ACTIVE_CONNECTIONS) {
+                        socket.close();
+                        continue;
+                    }
+                    sockets.put(socket, Boolean.TRUE);
+                }
+                Thread worker = new Thread(() -> {
+                    try {
+                        serve(socket);
+                    } finally {
+                        synchronized (sockets) {
+                            sockets.remove(socket);
+                        }
+                    }
+                }, "jz-wechat-bridge-request");
+                worker.setDaemon(true);
+                worker.start();
             } catch (SocketException error) {
                 if (running) error.printStackTrace();
                 return;
@@ -75,7 +92,7 @@ final class LoopbackHttpServer {
         try (Socket closeable = socket;
              BufferedInputStream input = new BufferedInputStream(socket.getInputStream());
              BufferedOutputStream output = new BufferedOutputStream(socket.getOutputStream())) {
-            socket.setSoTimeout(8_000);
+            socket.setSoTimeout(REQUEST_SOCKET_TIMEOUT_MS);
             request = readRequest(input);
             if (request == null) return;
             Response response = dispatch(request);
@@ -188,7 +205,7 @@ final class LoopbackHttpServer {
                 .put("state", snapshot.state)
                 .put("expiresAt", snapshot.expiresAt);
         if (AuthorizationSnapshot.AUTHORIZED.equals(snapshot.status)) {
-            json.put("code", snapshot.code)
+            json.put("session", snapshot.accountSession)
                     .put("wechatErrorCode", snapshot.wechatErrorCode);
         } else if (AuthorizationSnapshot.ERROR.equals(snapshot.status)) {
             json.put("wechatErrorCode", snapshot.wechatErrorCode)

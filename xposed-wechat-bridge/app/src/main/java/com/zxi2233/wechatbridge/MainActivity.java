@@ -30,7 +30,7 @@ public final class MainActivity extends Activity {
     public static final String ACTION_SHOW_CREDENTIAL =
             "com.zxi2233.wechatbridge.action.SHOW_CREDENTIAL";
     public static final String EXTRA_STATE = "credential_state";
-    public static final String EXTRA_CODE = "credential_code";
+    public static final String EXTRA_SESSION = "credential_session";
     public static final String EXTRA_ORIGIN = "credential_origin";
     public static final String EXTRA_WECHAT_ERROR_CODE = "wechat_error_code";
     public static final String EXTRA_WECHAT_ERROR = "wechat_error";
@@ -40,33 +40,24 @@ public final class MainActivity extends Activity {
     private TextView connectionPill;
     private TextView heading;
     private TextView summary;
-    private TextView codeView;
+    private TextView sessionView;
     private TextView stateView;
     private TextView originView;
     private TextView errorView;
     private TextView capturedAtView;
     private TextView hostView;
     private LinearLayout credentialCard;
-    private Button revealButton;
-    private Button copyCodeButton;
+    private Button copySessionButton;
     private Button copyStateButton;
-    private String credentialCode;
+    private String credentialSession;
     private String credentialState;
     private String captureState;
-    private String captureCode;
+    private String captureSession;
     private String captureOrigin;
     private String captureWechatError;
     private int captureWechatErrorCode;
     private long captureTime;
     private String captureHostVersion;
-    private boolean revealed;
-
-    @Override
-    protected void onSaveInstanceState(Bundle outState) {
-        super.onSaveInstanceState(outState);
-        // The actual code stays in memory for this Activity instance only.
-        outState.putBoolean("code_revealed", revealed);
-    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -74,12 +65,6 @@ public final class MainActivity extends Activity {
         configureWindow();
         setContentView(buildContent());
         consumeIntent(getIntent());
-        if (savedInstanceState != null && !credentialCode.isEmpty()) {
-            revealed = savedInstanceState.getBoolean("code_revealed", false);
-            codeView.setText(revealed ? credentialCode : mask(credentialCode));
-            revealButton.setText(revealed ? "隐藏授权码" : "显示授权码");
-            renderCredential();
-        }
     }
 
     @Override
@@ -127,13 +112,13 @@ public final class MainActivity extends Activity {
         pillParams.leftMargin = dp(8);
         topRow.addView(connectionPill, pillParams);
 
-        heading = text("微信授权凭证", 32, 0xFFE7E8EC, Typeface.NORMAL);
+        heading = text("微信登录结果", 32, 0xFFE7E8EC, Typeface.NORMAL);
         LinearLayout.LayoutParams headingParams = fullWidth();
         headingParams.topMargin = dp(28);
         root.addView(heading, headingParams);
 
         TextView description = text(
-                "这里显示模块最近一次从 SendAuth.Resp 捕获的真实结果。凭证只保留在当前页面内存中。",
+                "微信授权码由小天才宿主直接使用；这里只显示官方登录链路是否成功。",
                 16, 0xFFAEB2BD, Typeface.NORMAL);
         description.setLineSpacing(dp(4), 1f);
         LinearLayout.LayoutParams descriptionParams = fullWidth();
@@ -161,37 +146,30 @@ public final class MainActivity extends Activity {
         credentialParams.topMargin = dp(16);
         root.addView(credentialCard, credentialParams);
 
-        TextView codeLabel = label("授权码 CODE");
-        credentialCard.addView(codeLabel);
+        TextView sessionLabel = label("宿主登录会话");
+        credentialCard.addView(sessionLabel);
 
-        codeView = text("尚未捕获", 18, 0xFFE7E8EC, Typeface.NORMAL);
-        codeView.setTypeface(Typeface.MONOSPACE);
-        codeView.setTextIsSelectable(true);
-        codeView.setPadding(dp(16), dp(16), dp(16), dp(16));
-        codeView.setBackground(rounded(0xFF11151B, 16));
-        codeView.setInputType(InputType.TYPE_CLASS_TEXT
-                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
-        LinearLayout.LayoutParams codeParams = fullWidth();
-        codeParams.topMargin = dp(10);
-        credentialCard.addView(codeView, codeParams);
+        sessionView = text("尚未完成宿主登录", 18, 0xFFE7E8EC, Typeface.NORMAL);
+        sessionView.setTextIsSelectable(true);
+        sessionView.setPadding(dp(16), dp(16), dp(16), dp(16));
+        sessionView.setBackground(rounded(0xFF11151B, 16));
+        sessionView.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        LinearLayout.LayoutParams sessionParams = fullWidth();
+        sessionParams.topMargin = dp(10);
+        credentialCard.addView(sessionView, sessionParams);
 
-        LinearLayout codeActions = new LinearLayout(this);
-        codeActions.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams codeActionsParams = fullWidth();
-        codeActionsParams.topMargin = dp(12);
-        credentialCard.addView(codeActions, codeActionsParams);
+        LinearLayout sessionActions = new LinearLayout(this);
+        sessionActions.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams sessionActionsParams = fullWidth();
+        sessionActionsParams.topMargin = dp(12);
+        credentialCard.addView(sessionActions, sessionActionsParams);
 
-        revealButton = actionButton("显示授权码", false);
-        revealButton.setEnabled(false);
-        revealButton.setOnClickListener(view -> toggleCodeVisibility());
-        codeActions.addView(revealButton, weightedButton());
-
-        copyCodeButton = actionButton("复制 CODE", true);
-        copyCodeButton.setEnabled(false);
-        copyCodeButton.setOnClickListener(view -> copyCredential(credentialCode, "授权码已复制"));
-        LinearLayout.LayoutParams copyCodeParams = weightedButton();
-        copyCodeParams.leftMargin = dp(8);
-        codeActions.addView(copyCodeButton, copyCodeParams);
+        copySessionButton = actionButton("复制网页会话", true);
+        copySessionButton.setEnabled(false);
+        copySessionButton.setOnClickListener(view ->
+                copyCredential(credentialSession, "账号会话已复制"));
+        sessionActions.addView(copySessionButton, weightedButton());
 
         TextView detailsLabel = label("授权详情");
         LinearLayout.LayoutParams detailsLabelParams = fullWidth();
@@ -240,42 +218,38 @@ public final class MainActivity extends Activity {
     private void consumeIntent(Intent intent) {
         if (intent == null
                 || !ACTION_SHOW_CREDENTIAL.equals(intent.getAction())
-                && !intent.hasExtra(EXTRA_CODE)
+                && !intent.hasExtra(EXTRA_SESSION)
                 && !intent.hasExtra(EXTRA_STATE)) {
             return;
         }
-        String code = safeExtra(intent, EXTRA_CODE);
+        String session = safeExtra(intent, EXTRA_SESSION);
         String state = safeExtra(intent, EXTRA_STATE);
         String origin = safeExtra(intent, EXTRA_ORIGIN);
         String wechatError = safeExtra(intent, EXTRA_WECHAT_ERROR);
         int wechatErrorCode = intent.getIntExtra(EXTRA_WECHAT_ERROR_CODE, 0);
         long capturedAt = intent.getLongExtra(EXTRA_CAPTURED_AT, System.currentTimeMillis());
         String hostVersion = safeExtra(intent, EXTRA_HOST_VERSION);
-        intent.removeExtra(EXTRA_CODE);
+        intent.removeExtra(EXTRA_SESSION);
         intent.removeExtra(EXTRA_STATE);
 
-        captureCode = code;
+        captureSession = session;
         captureState = state;
         captureOrigin = origin;
         captureWechatError = wechatError;
         captureWechatErrorCode = wechatErrorCode;
         captureTime = capturedAt;
         captureHostVersion = hostVersion;
-        revealed = false;
         renderCredential();
-        // A code exists only in this Activity's memory. Drop it from the
-        // recents intent representation after rendering.
         setIntent(new Intent(this, MainActivity.class));
     }
 
     private void renderCredential() {
-        // Code and state are restored less often than a rotation; these are
-        // transient fields rather than Bundle or disk state.
-        credentialCode = captureCode == null ? "" : captureCode;
+        // The host session and state remain transient Activity memory.
+        credentialSession = captureSession == null ? "" : captureSession;
         credentialState = captureState == null ? "" : captureState;
-        codeView.setText(credentialCode.isEmpty()
-                ? "未返回授权码"
-                : (revealed ? credentialCode : mask(credentialCode)));
+        sessionView.setText(credentialSession.isEmpty()
+                ? "宿主登录尚未完成"
+                : "小天才宿主账号登录成功；会话已安全交给发起请求的网页。");
         stateView.setText(valueOrDash(credentialState));
         originView.setText(valueOrDash(captureOrigin));
         errorView.setText(captureWechatErrorCode == 0
@@ -287,12 +261,11 @@ public final class MainActivity extends Activity {
                 DateFormat.MEDIUM, DateFormat.MEDIUM, Locale.getDefault())
                 .format(new Date(captureTime)));
         hostView.setText(valueOrDash(captureHostVersion));
-        boolean hasCode = !credentialCode.isEmpty();
-        revealButton.setEnabled(hasCode);
-        copyCodeButton.setEnabled(hasCode);
+        boolean hasSession = !credentialSession.isEmpty();
+        copySessionButton.setEnabled(hasSession);
         copyStateButton.setEnabled(!credentialState.isEmpty());
-        if (hasCode) {
-            summary.setText("已捕获微信授权凭证");
+        if (hasSession) {
+            summary.setText("宿主账号登录成功");
             summary.setTextColor(color(0xFF79D79B));
             connectionPill.setText("授权成功");
             connectionPill.setTextColor(color(0xFF79D79B));
@@ -306,12 +279,6 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void toggleCodeVisibility() {
-        revealed = !revealed;
-        codeView.setText(revealed ? valueOrDash(credentialCode) : mask(credentialCode));
-        revealButton.setText(revealed ? "隐藏授权码" : "显示授权码");
-    }
-
     private void copyCredential(String value, String message) {
         if (value == null || value.isEmpty()) return;
         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
@@ -320,18 +287,15 @@ public final class MainActivity extends Activity {
     }
 
     private void clearCredential() {
-        credentialCode = "";
+        credentialSession = "";
         credentialState = "";
-        revealed = false;
-        codeView.setText("尚未捕获");
+        sessionView.setText("尚未完成宿主登录");
         stateView.setText("—");
         originView.setText("—");
         errorView.setText("—");
         capturedAtView.setText("—");
         hostView.setText("—");
-        revealButton.setEnabled(false);
-        revealButton.setText("显示授权码");
-        copyCodeButton.setEnabled(false);
+        copySessionButton.setEnabled(false);
         copyStateButton.setEnabled(false);
         summary.setText("等待网页发起授权请求");
         summary.setTextColor(color(0xFFE7E8EC));
@@ -430,10 +394,5 @@ public final class MainActivity extends Activity {
         return value == null || value.isEmpty() ? "—" : value;
     }
 
-    private static String mask(String value) {
-        if (value == null || value.isEmpty()) return "尚未捕获";
-        if (value.length() <= 8) return "••••••••";
-        return value.substring(0, 4) + "••••••••" + value.substring(value.length() - 4);
-    }
 }
 

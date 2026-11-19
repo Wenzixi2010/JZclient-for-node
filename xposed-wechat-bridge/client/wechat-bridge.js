@@ -74,10 +74,7 @@ function delay(milliseconds, signal) {
   });
 }
 
-/**
- * Starts a real WeChat SendAuth request through com.xtc.watch. The returned
- * code is single-use and must be exchanged immediately by the caller's backend.
- */
+/** Starts a real WeChat login through com.xtc.watch and returns its account session. */
 export async function requestWechatAuthorization({
   baseUrl = DEFAULT_BASE_URL,
   signal,
@@ -123,10 +120,10 @@ export async function requestWechatAuthorization({
       }));
       if (snapshot.status === 'authorized') {
         terminal = true;
-        if (!snapshot.code) {
-          throw new WechatBridgeError('missing_code', '微信授权成功，但响应中没有授权码。');
+        if (!snapshot.session) {
+          throw new WechatBridgeError('missing_session', '小天才登录成功，但响应中没有账号会话。');
         }
-        return { code: snapshot.code, state };
+        return { session: snapshot.session, state };
       }
     }
   } catch (error) {

@@ -8,9 +8,12 @@ import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.os.Handler;
 import android.os.Looper;
-import android.widget.Toast;
 
+import org.json.JSONObject;
+
+import java.lang.reflect.Proxy;
 import java.lang.ref.WeakReference;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -30,6 +33,8 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
     private boolean retryScheduled;
     private long lastHostLaunch;
     private String lastPreviewState = "";
+    private final AtomicBoolean hostLoginInFlight = new AtomicBoolean(false);
+    private volatile String hostSessionJson;
 
     BridgeRuntime(ClassLoader hostClassLoader) {
         this.hostClassLoader = hostClassLoader;
@@ -37,6 +42,7 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
 
     void install() throws Throwable {
         hookWechatCallback();
+        hookOfficialSessionStore();
         hookActivities();
         LoopbackHttpServer server = new LoopbackHttpServer(registry, this);
         server.start();
@@ -57,6 +63,49 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
                 if (current == param.thisObject) resumedActivity.clear();
             }
         });
+    }
+
+    private void hookOfficialSessionStore() {
+        try {
+            Class<?> storeClass = Class.forName(
+                    "com.xtc.common.shared.ShareToolManger", false, hostClassLoader);
+            XposedHelpers.findAndHookMethod(storeClass, "saveString",
+                    String.class, String.class, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            if (!"mobile_account_login_status".equals(param.args[0])
+                                    || param.args[1] == null) return;
+                            try {
+                                JSONObject record = new JSONObject(
+                                        String.valueOf(param.args[1]));
+                                JSONObject account = record.optJSONObject("MobileAccount");
+                                if (account == null) return;
+                                String token = account.optString("token", "");
+                                if (token.isEmpty()) return;
+                                hostSessionJson = new JSONObject()
+                                        .put("accountId",
+                                                account.optString("mobileId", ""))
+                                        .put("authId", account.optString("authId", ""))
+                                        .put("mobileId", account.optString("mobileId", ""))
+                                        .put("ticket", token)
+                                        .put("userName", firstNonEmpty(
+                                                account.optString("name", ""),
+                                                account.optString("number", ""),
+                                                account.optString("mobileId", "")))
+                                        .put("mobileNumber",
+                                                account.optString("number", ""))
+                                        .put("avatar", account.optString("icon", ""))
+                                        .put("ssoAccountId", ticketAccountId(token))
+                                        .toString();
+                                XposedBridge.log(TAG + " captured host account session");
+                            } catch (Throwable error) {
+                                XposedBridge.log(TAG + " host session parse skipped");
+                            }
+                        }
+                    });
+        } catch (Throwable error) {
+            XposedBridge.log(TAG + " session store hook unavailable: " + error);
+        }
     }
 
     private void hookWechatCallback() throws Throwable {
@@ -90,22 +139,24 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
                         if (nativeLogin) {
                             preview = hostLoginSnapshot("login_state", code, errorCode, error, now);
                         } else {
-                            boolean owned = registry.completeWechat(
-                                    wireState, code, errorCode, error, now);
+                            boolean owned = registry.claimWechat(
+                                    wireState, errorCode, error, now);
                             if (!owned) return;
                             preview = registry.peek(
                                     wireState.substring(BridgeContract.STATE_PREFIX.length()), now);
                         }
 
-                        // Neither the normal XTC login nor the web bridge may
-                        // consume the same code through the host broadcast.
+                        // Never let BaseWXEntryActivity consume this callback.
+                        // Web requests are completed by calling the host's own
+                        // official login implementation below.
                         param.setResult(null);
-                        if (nativeLogin && param.thisObject instanceof Activity) {
-                            Toast.makeText((Activity) param.thisObject,
-                                    "微信授权已拦截，小天才未使用本次凭证登录",
-                                    Toast.LENGTH_LONG).show();
+                        if (nativeLogin) {
+                            showCredentialPreview(preview);
+                        } else if (errorCode == 0) {
+                            beginHostLogin(wireState, code);
+                        } else {
+                            showCredentialPreview(preview);
                         }
-                        if (preview != null) showCredentialPreview(preview);
                         if (param.thisObject instanceof Activity) {
                             ((Activity) param.thisObject).finish();
                         }
@@ -123,13 +174,179 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
                 state,
                 authorized ? AuthorizationSnapshot.AUTHORIZED : AuthorizationSnapshot.ERROR,
                 now + BridgeContract.REQUEST_TTL_MS,
-                authorized ? code : null,
+                authorized ? "native_login_intercepted" : null,
                 errorCode,
                 error,
                 authorized ? null : (errorCode == -2 ? "wechat_cancelled" : "wechat_error"),
                 authorized ? null : (errorCode == -2
                         ? "你取消了微信授权。"
                         : (error == null || error.isEmpty() ? "微信授权失败。" : error)));
+    }
+
+    private void beginHostLogin(final String wireState, final String code) {
+        if (code == null || code.isEmpty()) {
+            registry.failLogin(wireState, "missing_wechat_code",
+                    "微信没有返回授权码，请重新授权。", System.currentTimeMillis());
+            return;
+        }
+        if (!hostLoginInFlight.compareAndSet(false, true)) {
+            registry.failLogin(wireState, "login_busy",
+                    "小天才正在完成另一个登录，请稍后重试。", System.currentTimeMillis());
+            return;
+        }
+        mainHandler.post(() -> {
+            try {
+                Context context = AndroidAppHelper.currentApplication();
+                if (context == null) throw new IllegalStateException("host context is null");
+                Class<?> listenerClass = Class.forName(
+                        "com.xtc.component.api.account.callback.OnLoginListener",
+                        false, hostClassLoader);
+                Class<?> mobileAccountClass = Class.forName(
+                        "com.xtc.component.api.account.bean.MobileAccount",
+                        false, hostClassLoader);
+                Object service = XposedHelpers.callStaticMethod(
+                        Class.forName("com.xtc.account.service.impl.Gambia",
+                                false, hostClassLoader), "Yd", context);
+                Object listener = Proxy.newProxyInstance(hostClassLoader,
+                        new Class<?>[]{listenerClass}, (proxy, method, args) -> {
+                            String name = method.getName();
+                            if ("onSuccess".equals(name)) {
+                                mainHandler.postDelayed(
+                                        () -> completeHostLogin(
+                                                wireState, service, mobileAccountClass), 150L);
+                                return null;
+                            }
+                            if ("onFailed".equals(name)) {
+                                Object failure = args != null && args.length > 0 ? args[0] : null;
+                                String message = failureMessage(failure);
+                                registry.failLogin(wireState, "host_login_failed",
+                                        message.isEmpty() ? "小天才未能完成微信登录。"
+                                                : "小天才未能完成微信登录：" + message,
+                                        System.currentTimeMillis());
+                                mainHandler.post(this::releaseHostLogin);
+                                return null;
+                            }
+                            if ("hashCode".equals(name)) return System.identityHashCode(proxy);
+                            if ("equals".equals(name)) return proxy == args[0];
+                            if ("toString".equals(name)) return "JZWechatLoginListener";
+                            return null;
+                        });
+                XposedHelpers.callMethod(service, "wc", null, code, "WECHET", listener);
+                XposedBridge.log(TAG + " delegated WeChat code to host login");
+            } catch (Throwable error) {
+                XposedBridge.log(TAG + " host login failed: " + error);
+                registry.failLogin(wireState, "host_incompatible",
+                        "当前小天才版本无法完成微信登录，请查看 LSPosed 日志。",
+                        System.currentTimeMillis());
+                releaseHostLogin();
+            }
+        });
+    }
+
+    private void completeHostLogin(final String wireState, final Object service,
+                                   final Class<?> mobileAccountClass) {
+        try {
+            Object account = loadMobileAccount(service, mobileAccountClass);
+            String sessionJson = hostSessionJson;
+            if (account != null && mobileAccountClass.isInstance(account)) {
+                String mobileId = stringField(account, "getMobileId");
+                String token = stringField(account, "getToken");
+                String authId = stringField(account, "getAuthId");
+                if (!token.isEmpty()) {
+                    sessionJson = new JSONObject()
+                            .put("accountId", mobileId)
+                            .put("authId", authId)
+                            .put("mobileId", mobileId)
+                            .put("ticket", token)
+                            .put("userName", firstNonEmpty(
+                                    stringField(account, "getName"),
+                                    stringField(account, "getNumber"),
+                                    mobileId))
+                            .put("mobileNumber", firstNonEmpty(
+                                    stringField(account, "getNumber"),
+                                    stringField(account, "getContactNumber")))
+                            .put("avatar", stringField(account, "getIcon"))
+                            .put("ssoAccountId", ticketAccountId(token))
+                            .toString();
+                }
+            }
+            if (sessionJson == null || sessionJson.isEmpty()) {
+                throw new IllegalStateException("host session is unavailable");
+            }
+            boolean completed = registry.completeWithAccount(
+                    wireState, sessionJson, 0, null, System.currentTimeMillis());
+            if (completed) {
+                XposedBridge.log(TAG + " host account login completed");
+                String state = wireState.substring(BridgeContract.STATE_PREFIX.length());
+                AuthorizationSnapshot request = registry.peek(
+                        state, System.currentTimeMillis());
+                if (request != null) showCredentialPreview(request);
+            }
+        } catch (Throwable error) {
+            XposedBridge.log(TAG + " reading host account failed: " + error);
+            registry.failLogin(wireState, "session_unavailable",
+                    "小天才登录成功，但无法读取账号会话。",
+                    System.currentTimeMillis());
+        } finally {
+            mainHandler.post(this::releaseHostLogin);
+        }
+    }
+
+    private void releaseHostLogin() {
+        hostLoginInFlight.set(false);
+    }
+
+    private Object loadMobileAccount(Object service, Class<?> mobileAccountClass) {
+        Object account = XposedHelpers.callMethod(service, "Xb");
+        if (account != null && mobileAccountClass.isInstance(account)) return account;
+        Context context = AndroidAppHelper.currentApplication();
+        if (context == null) return null;
+        try {
+            Class<?> api = Class.forName(
+                    "com.xtc.component.api.account.AccountInfoApi",
+                    false, hostClassLoader);
+            account = XposedHelpers.callStaticMethod(api, "getMobileAccount", context);
+            return account != null && mobileAccountClass.isInstance(account) ? account : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static String stringField(Object target, String getter) {
+        try {
+            Object value = XposedHelpers.callMethod(target, getter);
+            return value == null ? "" : String.valueOf(value);
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
+
+    private static String firstNonEmpty(String... values) {
+        if (values == null) return "";
+        for (String value : values) {
+            if (value != null && !value.trim().isEmpty()) return value.trim();
+        }
+        return "";
+    }
+
+    private static String ticketAccountId(String ticket) {
+        try {
+            return new JSONObject(ticket).optString("accountId", "");
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
+
+    private static String failureMessage(Object value) {
+        if (value == null) return "";
+        try {
+            Object desc = XposedHelpers.getObjectField(value, "desc");
+            if (desc != null && !String.valueOf(desc).trim().isEmpty()) {
+                return String.valueOf(desc).trim();
+            }
+        } catch (Throwable ignored) {
+        }
+        return String.valueOf(value);
     }
 
     @Override
@@ -176,7 +393,9 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
                     BridgeContract.MODULE_PACKAGE + ".MainActivity");
             preview.setAction(MainActivity.ACTION_SHOW_CREDENTIAL);
             preview.putExtra(MainActivity.EXTRA_STATE, snapshot.state);
-            if (snapshot.code != null) preview.putExtra(MainActivity.EXTRA_CODE, snapshot.code);
+            if (snapshot.accountSession != null) {
+                preview.putExtra(MainActivity.EXTRA_SESSION, snapshot.accountSession);
+            }
             String origin = registry.originForInternal(snapshot.state);
             preview.putExtra(MainActivity.EXTRA_ORIGIN,
                     origin == null ? "小天才家长端 · 原生微信登录" : origin);

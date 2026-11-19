@@ -1,8 +1,8 @@
 # JZ 微信授权桥（LSPosed 模块）
 
-在 `com.xtc.watch` 小天才家长端内复用宿主已有的微信 SDK。手机网页发起请求后，模块在小天才里显示来源确认，再打开微信完成 `snsapi_userinfo` 授权，并将真实 `code/state` 返回给该网页。
+在 `com.xtc.watch` 小天才家长端内复用宿主已有的微信 SDK。手机网页发起请求后，模块在小天才里显示来源确认，再打开微信完成 `snsapi_userinfo` 授权；真实 `code` 直接交给宿主官方登录链路，网页只取得宿主生成的账号会话。
 
-当前版本用于验证“网页调起微信并接收授权信息”。它带有独立模块界面，会显示最近一次拦截到的真实授权结果；不会自动把授权码兑换成 JZ 家长账号登录，也不会保存授权码。
+当前版本用于完成真实微信登录。它带有独立模块界面，会显示最近一次宿主登录结果；不会把微信授权码交给网页、写入日志或保存到文件。
 
 ## 安装与启用
 
@@ -31,13 +31,13 @@ ES 模块客户端位于 `client/wechat-bridge.js`：
 ```js
 import { requestWechatAuthorization } from './wechat-bridge.js';
 
-const { code, state } = await requestWechatAuthorization({
+const { session, state } = await requestWechatAuthorization({
   onStatus(snapshot) {
     console.log(snapshot.status); // 不输出 code
   },
 });
 
-// code 是一次性凭证，应立即交给你自己的后端换票，不要持久化。
+// session 由小天才宿主登录后生成，应立即交给 JZ 后端，不要持久化。
 ```
 
 也可以从 `client/` 目录启动一个静态 HTTP 服务，用手机访问 `demo.html` 做真实授权联调。不要直接用 `file://` 打开，因为模块会拒绝 `Origin: null`。
@@ -48,7 +48,9 @@ const { code, state } = await requestWechatAuthorization({
 2. 网页请求模块，小天才显示请求来源。
 3. 用户确认后，模块通过宿主的 `IWXAPI.sendReq()` 打开微信。
 4. 用户在微信中授权。
-5. 回到网页后，网页轮询取得一次性 `code`，并校验 `state`。
+5. 桥接把微信 `code` 交给小天才宿主官方 `MobileService.wc()`。
+6. 宿主完成 SSO 换票、下载账号和手表后，桥接读取 `MobileAccount`。
+7. 网页轮询取得账号会话，并校验 `state`。
 
 如果 Android 阻止后台打开小天才，网页停留在 `waiting_for_host`；手动打开小天才即可继续。
 
@@ -56,7 +58,7 @@ const { code, state } = await requestWechatAuthorization({
 
 捕获成功后会自动打开模块界面，并显示以下内容：
 
-- 真实微信授权 `code`，默认遮罩，可手动显示或复制。
+- 宿主官方账号登录是否完成。
 - 完整 `state`，可单独复制。
 - 请求来源、微信错误码、捕获时间和小天才版本。
 
@@ -71,7 +73,7 @@ const { code, state } = await requestWechatAuthorization({
 - 成功和失败结果都只能由原来源读取一次。
 - 桥接响应不会进入小天才原有的登录广播，避免宿主先消费一次性授权码。
 - 宿主原生登录使用固定 `login_state`，也会拦截并交给 JZ App，阻止宿主消费一次性授权码；账号绑定的 `relative_state`、分享和支付流程不受影响。
-- 授权码不写日志、不落盘，模块不包含也不处理微信 AppSecret。
+- 微信授权码不返回网页、不写日志、不落盘，模块不包含也不处理微信 AppSecret。
 
 ## 构建与验证
 
@@ -93,8 +95,9 @@ app/build/outputs/apk/debug/app-debug.apk
 ## 当前验证范围
 
 - Android Java 编译和 Debug APK 签名打包已通过。
-- 授权状态、来源隔离、单次读取、过期和取消等 9 项单元测试已通过。
-- 已在小天才家长端 `9.48.00` 上验证原生 `login_state` 回调：JZ App 能显示真实授权结果，宿主不会消费该授权码登录。
+- 授权状态、来源隔离、单次读取、过期和取消等单元测试已通过。
+- 已在小天才家长端 `9.48.00` 上验证原生 `login_state` 回调、桥接服务启动和 APK 构建。
+- 网页微信登录还要求在实机点击一次真实授权，以确认宿主完成换票后的账号会话格式。
 
 若模块已加载但授权时报 `host_incompatible`，请提供小天才版本和 LSPosed 中 `[JZWechatBridge]` 附近的错误日志。
 

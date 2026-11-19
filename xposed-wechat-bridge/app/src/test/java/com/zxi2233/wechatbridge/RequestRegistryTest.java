@@ -21,19 +21,22 @@ public final class RequestRegistryTest {
         assertNull(registry.poll("http://192.168.1.9:8787", STATE, NOW));
         assertEquals(AuthorizationSnapshot.WAITING_FOR_HOST,
                 registry.poll(ORIGIN, STATE, NOW).status);
-        assertTrue(registry.completeWechat(BridgeContract.wireState(STATE),
-                "single-use-code", 0, null, NOW + 100));
+        assertTrue(registry.claimWechat(BridgeContract.wireState(STATE), 0, null, NOW + 100));
+        assertEquals(AuthorizationSnapshot.LOGGING_IN,
+                registry.peek(STATE, NOW + 150).status);
+        assertTrue(registry.completeWithAccount(BridgeContract.wireState(STATE),
+                "{\"ticket\":\"host-session\"}", 0, null, NOW + 175));
 
         AuthorizationSnapshot result = registry.poll(ORIGIN, STATE, NOW + 200);
         assertEquals(AuthorizationSnapshot.AUTHORIZED, result.status);
-        assertEquals("single-use-code", result.code);
+        assertEquals("{\"ticket\":\"host-session\"}", result.accountSession);
         assertNull(registry.poll(ORIGIN, STATE, NOW + 300));
     }
 
     @Test
     public void hostLoginStateIsNotOwnedByBridge() {
-        assertFalse(registry.completeWechat("login_state", "host-code", 0, null, NOW));
-        assertFalse(registry.completeWechat("relative_state_1", "host-code", 0, null, NOW));
+        assertFalse(registry.claimWechat("login_state", 0, null, NOW));
+        assertFalse(registry.claimWechat("relative_state_1", 0, null, NOW));
     }
 
     @Test
@@ -63,24 +66,24 @@ public final class RequestRegistryTest {
     @Test
     public void lateResponseNeverReleasesCode() throws Exception {
         registry.create(ORIGIN, STATE, NOW);
-        assertTrue(registry.completeWechat(BridgeContract.wireState(STATE),
-                "late-code", 0, null, NOW + BridgeContract.REQUEST_TTL_MS));
+        assertTrue(registry.claimWechat(BridgeContract.wireState(STATE),
+                0, null, NOW + BridgeContract.REQUEST_TTL_MS));
         AuthorizationSnapshot result = registry.poll(ORIGIN, STATE,
                 NOW + BridgeContract.REQUEST_TTL_MS);
         assertEquals(AuthorizationSnapshot.ERROR, result.status);
         assertEquals("expired", result.errorCode);
-        assertNull(result.code);
+        assertNull(result.accountSession);
     }
 
     @Test
     public void cancelledWechatResponseContainsNoCode() throws Exception {
         registry.create(ORIGIN, STATE, NOW);
-        registry.completeWechat(BridgeContract.wireState(STATE),
-                null, -2, "cancel", NOW + 100);
+        registry.claimWechat(BridgeContract.wireState(STATE),
+                -2, "cancel", NOW + 100);
         AuthorizationSnapshot result = registry.poll(ORIGIN, STATE, NOW + 200);
         assertEquals("wechat_cancelled", result.errorCode);
         assertEquals(-2, result.wechatErrorCode);
-        assertNull(result.code);
+        assertNull(result.accountSession);
     }
 
     @Test
@@ -89,8 +92,8 @@ public final class RequestRegistryTest {
         assertFalse(registry.cancel("http://other.example", STATE, NOW));
         assertTrue(registry.cancel(ORIGIN, STATE, NOW));
         assertNull(registry.poll(ORIGIN, STATE, NOW));
-        assertFalse(registry.completeWechat(BridgeContract.wireState(STATE),
-                "unused-code", 0, null, NOW));
+        assertFalse(registry.claimWechat(BridgeContract.wireState(STATE),
+                0, null, NOW));
     }
 
     @Test

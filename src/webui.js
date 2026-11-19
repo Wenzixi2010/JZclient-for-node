@@ -3331,7 +3331,7 @@ async function startWebUI({ cfg, port = 8787, host = '0.0.0.0', token, ticketSec
 
     // ===== 账号 / 配置 =====
     if (parts[1] === 'account') {
-      if (parts[2] === 'login' && req.method === 'POST') {
+      if (parts[2] === 'login' && !parts[3] && req.method === 'POST') {
         const b = await readBody(req);
         const account = String(b.account || '').trim();
         const password = String(b.password || '');
@@ -3357,6 +3357,56 @@ async function startWebUI({ cfg, port = 8787, host = '0.0.0.0', token, ticketSec
         }
         await finishLogin(account, r.json.data, r.rsaKey);
         return ok(res, { userName: cfg.userName, loggedIn: true });
+      }
+
+      if (parts[2] === 'login' && parts[3] === 'wechat' && req.method === 'POST') {
+        const b = await readBody(req);
+        let session;
+        try {
+          session = typeof b.session === 'string' ? JSON.parse(b.session) : b.session;
+        } catch (e) {
+          throw new Error('微信登录会话格式无效，请重新授权');
+        }
+        if (!session || typeof session !== 'object') {
+          throw new Error('缺少小天才账号会话，请重新授权');
+        }
+        const ticket = String(session.ticket || '').trim();
+        if (!ticket) throw new Error('小天才没有返回登录票据，请重新授权');
+
+        // The host's MobileAccount.token is the official SSO login payload.
+        // Keep it byte-for-byte: downstream requests parse this exact string.
+        let loginData = ticket;
+        let account = String(
+          session.userName
+          || session.mobileNumber
+          || session.mobileId
+          || session.authId
+          || '微信账号'
+        ).trim();
+        let decodedTicket = null;
+        try { decodedTicket = JSON.parse(ticket); } catch (e) { /* host may issue an opaque token */ }
+        if (decodedTicket && typeof decodedTicket === 'object') {
+          delete decodedTicket.ticket;
+          if (!decodedTicket.accountId && session.ssoAccountId) {
+            decodedTicket.accountId = String(session.ssoAccountId);
+          }
+          loginData = JSON.stringify(decodedTicket);
+          account = String(
+            decodedTicket.userName
+            || decodedTicket.loginName
+            || decodedTicket.mobilePhone
+            || decodedTicket.mobileNumber
+            || account
+          ).trim();
+        } else if (session.ssoAccountId) {
+          try {
+            loginData = JSON.stringify({ accountId: String(session.ssoAccountId), ticket });
+          } catch (e) {
+            throw new Error('小天才返回的登录票据无法解析，请重新授权');
+          }
+        }
+        await finishLogin(account, loginData);
+        return ok(res, { userName: cfg.userName, loggedIn: true, via: 'wechat' });
       }
 
       // 新设备验证: 获取密保问题
