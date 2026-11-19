@@ -37,6 +37,14 @@ public final class RequestRegistryTest {
     }
 
     @Test
+    public void nativeLoginAndWebBridgeStatesAreIntercepted() {
+        assertTrue(BridgeContract.shouldIntercept("login_state"));
+        assertTrue(BridgeContract.shouldIntercept(BridgeContract.wireState(STATE)));
+        assertFalse(BridgeContract.shouldIntercept("relative_state_1"));
+        assertFalse(BridgeContract.shouldIntercept(null));
+    }
+
+    @Test
     public void lateResponseNeverReleasesCode() throws Exception {
         registry.create(ORIGIN, STATE, NOW);
         assertTrue(registry.completeWechat(BridgeContract.wireState(STATE),

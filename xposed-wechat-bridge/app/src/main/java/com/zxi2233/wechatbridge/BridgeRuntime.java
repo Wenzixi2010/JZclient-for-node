@@ -8,6 +8,7 @@ import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.os.Handler;
 import android.os.Looper;
+import android.widget.Toast;
 
 import java.lang.ref.WeakReference;
 
@@ -72,25 +73,56 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
                         Object response = param.args[0];
                         if (response == null || !authResponseClass.isInstance(response)) return;
                         String state = (String) XposedHelpers.getObjectField(response, "state");
-                        if (state == null || !state.startsWith(BridgeContract.STATE_PREFIX)) return;
+                        if (!BridgeContract.shouldIntercept(state)) return;
 
                         int errorCode = XposedHelpers.getIntField(response, "errCode");
                         String error = (String) XposedHelpers.getObjectField(response, "errStr");
                         String code = (String) XposedHelpers.getObjectField(response, "code");
-                        boolean owned = registry.completeWechat(
-                                state, code, errorCode, error, System.currentTimeMillis());
-                        if (!owned) return;
+                        long now = System.currentTimeMillis();
+                        boolean hostLogin = "login_state".equals(state);
+                        AuthorizationSnapshot preview;
+                        if (hostLogin) {
+                            preview = hostLoginSnapshot(state, code, errorCode, error, now);
+                        } else {
+                            boolean owned = registry.completeWechat(
+                                    state, code, errorCode, error, now);
+                            if (!owned) return;
+                            preview = registry.peek(state, now);
+                        }
 
-                        // The host must not consume this single-use code through
-                        // its own wechat.login.response broadcast.
+                        // Neither the normal XTC login nor the web bridge may
+                        // consume the same code through the host broadcast.
                         param.setResult(null);
-                        showCredentialPreview(registry.peek(state, System.currentTimeMillis()));
+                        if (hostLogin && param.thisObject instanceof Activity) {
+                            Toast.makeText((Activity) param.thisObject,
+                                    "微信授权已拦截，小天才未使用本次凭证登录",
+                                    Toast.LENGTH_LONG).show();
+                        }
+                        showCredentialPreview(preview);
                         if (param.thisObject instanceof Activity) {
                             ((Activity) param.thisObject).finish();
                         }
-                        XposedBridge.log(TAG + "received WeChat result, errCode=" + errorCode);
+                        XposedBridge.log(TAG + "intercepted "
+                                + (hostLogin ? "host login" : "web authorization")
+                                + ", errCode=" + errorCode);
                     }
                 });
+    }
+
+    private AuthorizationSnapshot hostLoginSnapshot(String state, String code,
+                                                     int errorCode, String error, long now) {
+        boolean authorized = errorCode == 0 && code != null && !code.isEmpty();
+        return new AuthorizationSnapshot(
+                state,
+                authorized ? AuthorizationSnapshot.AUTHORIZED : AuthorizationSnapshot.ERROR,
+                now + BridgeContract.REQUEST_TTL_MS,
+                authorized ? code : null,
+                errorCode,
+                error,
+                authorized ? null : (errorCode == -2 ? "wechat_cancelled" : "wechat_error"),
+                authorized ? null : (errorCode == -2
+                        ? "你取消了微信授权。"
+                        : (error == null || error.isEmpty() ? "微信授权失败。" : error)));
     }
 
     @Override
@@ -128,17 +160,19 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
         Context context = AndroidAppHelper.currentApplication();
         if (context == null) return;
         // One result opens one preview even if the SDK delivers a duplicate.
-        if (lastPreviewState.equals(snapshot.state + ":" + snapshot.status)) return;
-        lastPreviewState = snapshot.state + ":" + snapshot.status;
+        String previewKey = snapshot.state + ":" + snapshot.status + ":" + snapshot.expiresAt;
+        if (lastPreviewState.equals(previewKey)) return;
+        lastPreviewState = previewKey;
         try {
             Intent preview = new Intent();
             preview.setClassName(BridgeContract.MODULE_PACKAGE,
                     BridgeContract.MODULE_PACKAGE + ".MainActivity");
             preview.setAction(MainActivity.ACTION_SHOW_CREDENTIAL);
             preview.putExtra(MainActivity.EXTRA_STATE, snapshot.state);
-            String secret = registry.captureSecret(snapshot);
-            if (secret != null) preview.putExtra(MainActivity.EXTRA_CODE, secret);
-            preview.putExtra(MainActivity.EXTRA_ORIGIN, registry.originForInternal(snapshot.state));
+            if (snapshot.code != null) preview.putExtra(MainActivity.EXTRA_CODE, snapshot.code);
+            String origin = registry.originForInternal(snapshot.state);
+            preview.putExtra(MainActivity.EXTRA_ORIGIN,
+                    origin == null ? "小天才家长端 · 原生微信登录" : origin);
             preview.putExtra(MainActivity.EXTRA_WECHAT_ERROR_CODE, snapshot.wechatErrorCode);
             preview.putExtra(MainActivity.EXTRA_WECHAT_ERROR, snapshot.wechatError);
             preview.putExtra(MainActivity.EXTRA_CAPTURED_AT, System.currentTimeMillis());

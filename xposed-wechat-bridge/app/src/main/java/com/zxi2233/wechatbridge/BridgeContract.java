@@ -25,6 +25,10 @@ public final class BridgeContract {
         return STATE_PREFIX + state;
     }
 
+    public static boolean shouldIntercept(String state) {
+        return state != null && (state.startsWith(STATE_PREFIX) || "login_state".equals(state));
+    }
+
     /**
      * Only a real HTTP(S) browser origin is accepted. In particular, "null",
      * custom schemes, credentials and paths cannot be used as callers.

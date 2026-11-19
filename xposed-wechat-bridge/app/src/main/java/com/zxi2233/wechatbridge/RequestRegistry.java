@@ -84,14 +84,6 @@ public final class RequestRegistry {
         return entry == null ? null : entry.origin;
     }
 
-    synchronized String captureSecret(AuthorizationSnapshot snapshot) {
-        if (snapshot == null || !AuthorizationSnapshot.AUTHORIZED.equals(snapshot.status)) {
-            return null;
-        }
-        Entry entry = byState.get(snapshot.state);
-        return entry == null ? null : entry.code;
-    }
-
     public synchronized AuthorizationSnapshot nextPending(long now) {
         purge(now);
         Entry oldest = null;
