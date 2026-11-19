@@ -27,6 +27,8 @@ final class LoopbackHttpServer {
         void onAuthorizationCreated(String state);
         void onAuthorizationCancelled(String state);
         String hostVersion();
+        JSONObject diagnostics();
+        String diagnosticLog();
     }
 
     private static final int MAX_HEADERS_BYTES = 16 * 1024;
@@ -165,6 +167,17 @@ final class LoopbackHttpServer {
             return new Response(200, body, origin);
         }
         if (origin == null) throw new BridgeException(403, "origin_required", "需要网页 Origin。");
+
+        if ("/v1/diagnostics".equals(path) && "GET".equals(request.method)) {
+            return new Response(200, new JSONObject()
+                    .put("ok", true)
+                    .put("data", listener.diagnostics()), origin);
+        }
+        if ("/v1/diagnostics/log".equals(path) && "GET".equals(request.method)) {
+            return new Response(200, new JSONObject()
+                    .put("ok", true)
+                    .put("data", new JSONObject().put("lines", listener.diagnosticLog())), origin);
+        }
 
         if ("/v1/authorizations".equals(path) && "POST".equals(request.method)) {
             if (request.body == null) throw new BridgeException(400, "body_required", "需要 JSON 请求体。");

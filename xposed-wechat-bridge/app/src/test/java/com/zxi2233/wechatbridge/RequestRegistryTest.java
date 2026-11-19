@@ -23,7 +23,7 @@ public final class RequestRegistryTest {
                 registry.poll(ORIGIN, STATE, NOW).status);
         assertTrue(registry.claimWechat(BridgeContract.wireState(STATE), 0, null, NOW + 100));
         assertEquals(AuthorizationSnapshot.LOGGING_IN,
-                registry.peek(STATE, NOW + 150).status);
+                registry.peek(ORIGIN, STATE, NOW + 150).status);
         assertTrue(registry.completeWithAccount(BridgeContract.wireState(STATE),
                 "{\"ticket\":\"host-session\"}", 0, null, NOW + 175));
 
@@ -37,6 +37,17 @@ public final class RequestRegistryTest {
     public void hostLoginStateIsNotOwnedByBridge() {
         assertFalse(registry.claimWechat("login_state", 0, null, NOW));
         assertFalse(registry.claimWechat("relative_state_1", 0, null, NOW));
+    }
+
+    @Test
+    public void officialLoginStateIsOwnedOnlyWithThePendingRequestState() throws Exception {
+        registry.create(ORIGIN, STATE, NOW);
+        assertFalse(registry.claimOfficialWechat("unrelated_state_123456789", 0, null, NOW));
+        assertTrue(registry.claimOfficialWechat(STATE, 0, null, NOW + 100));
+        assertEquals(AuthorizationSnapshot.LOGGING_IN,
+                registry.peek(ORIGIN, STATE, NOW + 150).status);
+        assertTrue(registry.completeWithAccount(BridgeContract.wireState(STATE),
+                "{\"ticket\":\"host-session\"}", 0, null, NOW + 175));
     }
 
     @Test

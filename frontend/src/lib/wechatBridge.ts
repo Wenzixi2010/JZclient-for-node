@@ -1,4 +1,6 @@
 const DEFAULT_BASE_URL = 'http://127.0.0.1:38787';
+const PENDING_AUTHORIZATION_KEY = 'jz_wechat_authorization';
+const PENDING_AUTHORIZATION_TTL_MS = 115_000;
 
 export class WechatBridgeError extends Error {
   code: string;
@@ -20,6 +22,38 @@ function randomState() {
   let binary = '';
   bytes.forEach(byte => { binary += String.fromCharCode(byte); });
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+export type WechatAuthorizationStatus = 'waiting_for_host' | 'awaiting_confirmation' | 'launching_wechat' | 'waiting_for_wechat' | 'logging_in' | 'authorized' | 'authorizing' | 'error';
+
+type PendingAuthorization = {
+  state: string;
+  status: WechatAuthorizationStatus;
+  expiresAt: number;
+};
+
+function readPendingAuthorization(): PendingAuthorization | null {
+  try {
+    const stored = sessionStorage.getItem(PENDING_AUTHORIZATION_KEY);
+    if (!stored) return null;
+    const pending = JSON.parse(stored) as PendingAuthorization;
+    if (!/^[A-Za-z0-9_-]{16,128}$/.test(pending.state || '')
+        || !Number.isFinite(pending.expiresAt)
+        || pending.expiresAt <= Date.now()) {
+      sessionStorage.removeItem(PENDING_AUTHORIZATION_KEY);
+      return null;
+    }
+    return pending;
+  } catch {
+    return null;
+  }
+}
+
+function savePendingAuthorization(pending: PendingAuthorization | null) {
+  try {
+    if (pending) sessionStorage.setItem(PENDING_AUTHORIZATION_KEY, JSON.stringify(pending));
+    else sessionStorage.removeItem(PENDING_AUTHORIZATION_KEY);
+  } catch { /* Storage is an optimization; the in-memory request still works. */ }
 }
 
 async function bridgeRequest(path: string, options: RequestInit = {}) {
@@ -55,7 +89,10 @@ function delay(milliseconds: number, signal: AbortSignal) {
   });
 }
 
-export type WechatAuthorizationStatus = 'waiting_for_host' | 'awaiting_confirmation' | 'launching_wechat' | 'waiting_for_wechat' | 'logging_in' | 'authorized' | 'authorizing' | 'error';
+export function getPendingWechatAuthorization() {
+  const pending = readPendingAuthorization();
+  return pending ? { status: pending.status, expiresAt: pending.expiresAt } : null;
+}
 
 export async function requestWechatAuthorization({
   signal,
@@ -73,39 +110,85 @@ export async function requestWechatAuthorization({
   let created = false;
   let terminal = false;
   let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  const deadlineMs = Math.max(5_000, Number(timeoutMs) || 125_000);
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  // Android freezes background browser timers while the native host is in
+  // front. Start the deadline after we resume instead of expiring unseen.
+  const pauseDeadline = () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+  };
+  const startDeadline = () => {
+    pauseDeadline();
+    timer = setTimeout(() => { timedOut = true; controller.abort(); }, deadlineMs);
+  };
+  const visibilityChanged = () => {
+    if (document.visibilityState === 'visible') startDeadline();
+    else pauseDeadline();
+  };
+  const pending = readPendingAuthorization();
 
   try {
+    document.addEventListener('visibilitychange', visibilityChanged);
+    startDeadline();
     await getWechatBridgeStatus(controller.signal);
-    state = randomState();
-    let snapshot = await bridgeRequest('/v1/authorizations', {
-      method: 'POST', body: JSON.stringify({ state }), signal: controller.signal,
-    });
-    created = true;
-    onStatus?.(snapshot.status);
-    while (true) {
-      await delay(800, controller.signal);
-      snapshot = await bridgeRequest(`/v1/authorizations/${state}`, { signal: controller.signal });
-      if (snapshot.state !== state) throw new WechatBridgeError('state_mismatch', '微信授权返回的校验状态不一致，请重试。');
+    let snapshot: any;
+    if (pending) {
+      state = pending.state;
+      onStatus?.(pending.status);
+      try {
+        snapshot = await bridgeRequest(`/v1/authorizations/${state}`, { signal: controller.signal });
+      } catch (error) {
+        if (!(error instanceof WechatBridgeError) || error.status !== 404) throw error;
+        savePendingAuthorization(null);
+        state = '';
+      }
+    }
+    if (!state) {
+      state = randomState();
+      snapshot = await bridgeRequest('/v1/authorizations', {
+        method: 'POST', body: JSON.stringify({ state }), signal: controller.signal,
+      });
+      created = true;
+      savePendingAuthorization({
+        state,
+        status: snapshot.status,
+        expiresAt: Number(snapshot.expiresAt) || Date.now() + PENDING_AUTHORIZATION_TTL_MS,
+      });
       onStatus?.(snapshot.status);
+    }
+    while (true) {
       if (snapshot.status === 'error') {
         terminal = true;
+        savePendingAuthorization(null);
         throw new WechatBridgeError(snapshot.error?.code || 'authorization_failed', snapshot.error?.message || '微信授权失败。', { wechatErrorCode: snapshot.wechatErrorCode });
       }
       if (snapshot.status === 'authorized') {
         terminal = true;
+        savePendingAuthorization(null);
         if (!snapshot.session) throw new WechatBridgeError('missing_session', '小天才登录成功，但没有返回账号会话。');
         return { session: String(snapshot.session), state };
       }
+      await delay(800, controller.signal);
+      snapshot = await bridgeRequest(`/v1/authorizations/${state}`, { signal: controller.signal });
+      if (snapshot.state !== state) throw new WechatBridgeError('state_mismatch', '微信授权返回的校验状态不一致，请重试。');
+      onStatus?.(snapshot.status);
+      savePendingAuthorization({
+        state,
+        status: snapshot.status,
+        expiresAt: Date.now() + PENDING_AUTHORIZATION_TTL_MS,
+      });
     }
   } catch (error) {
     if (timedOut) throw new WechatBridgeError('authorization_timeout', '等待微信授权超时，请重新发起。', { cause: error });
     if (signal?.aborted) throw new WechatBridgeError('aborted', '已取消微信授权。', { cause: error });
     throw error;
   } finally {
-    clearTimeout(timer);
+    pauseDeadline();
+    document.removeEventListener('visibilitychange', visibilityChanged);
     signal?.removeEventListener('abort', abort);
     if (created && !terminal) {
+      savePendingAuthorization(null);
       fetch(`${DEFAULT_BASE_URL}/v1/authorizations/${state}`, { method: 'DELETE', mode: 'cors', credentials: 'omit', cache: 'no-store' }).catch(() => {});
     }
   }

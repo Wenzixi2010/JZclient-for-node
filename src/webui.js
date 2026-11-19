@@ -2531,6 +2531,8 @@ async function startWebUI({ cfg, port = 8787, host = '0.0.0.0', token, ticketSec
     cfg.userName = account;
     cfg.ssoRsaKey = rsaKey;
     try { cfg.authId = JSON.parse(cfg.token).accountId; } catch (e) { /* ignore */ }
+    // Clear an expiry marker for the previous token before probing the new one.
+    api._expiredToken = null;
     device.save(cfg);
 
     cache.at = 0;
@@ -3405,7 +3407,72 @@ async function startWebUI({ cfg, port = 8787, host = '0.0.0.0', token, ticketSec
             throw new Error('小天才返回的登录票据无法解析，请重新授权');
           }
         }
-        await finishLogin(account, loginData);
+        // Verify the host's official token before replacing a working WebUI
+        // account. A token can survive briefly in the host store after the
+        // user logs out there, but it is unusable for platform requests.
+        const previous = {
+          token: cfg.token,
+          userName: cfg.userName,
+          ssoRsaKey: cfg.ssoRsaKey,
+          authId: cfg.authId,
+          mobileId: cfg.mobileId,
+          bizRsaKey: cfg.bizRsaKey,
+          bizDeviceId: cfg.bizDeviceId,
+          bizMac: cfg.bizMac,
+          bizMachineId: cfg.bizMachineId,
+          nDeviceId: cfg.nDeviceId,
+          parentSessionExpired: api.sessionExpired,
+        };
+        cfg.token = loginData;
+        cfg.userName = account;
+        cfg.ssoRsaKey = undefined;
+        try { cfg.authId = JSON.parse(loginData).accountId; } catch (e) { /* host may return an opaque token */ }
+        if (session.bizDeviceId) cfg.bizDeviceId = String(session.bizDeviceId);
+        if (session.bizMac) cfg.bizMac = String(session.bizMac);
+        if (session.bizMachineId) cfg.bizMachineId = String(session.bizMachineId);
+        if (session.bizNDeviceId) cfg.nDeviceId = String(session.bizNDeviceId);
+        cfg.bizRsaKey = null;
+        api._expiredToken = null;
+        let probe, accountProbe, watchProbe;
+        try {
+          probe = ensure(await api.getMobileInit());
+          const hostAccount = probe?.mobileAccount || {};
+          const mobileId = String(hostAccount.id || session.mobileId || '').trim();
+          if (hostAccount.id) cfg.mobileId = String(hostAccount.id);
+          if (hostAccount.authId) cfg.authId = String(hostAccount.authId);
+          if (!mobileId) throw new Error('宿主没有返回家长账号 ID');
+          accountProbe = ensure(await api.getMobileAccount(mobileId));
+          const watches = Array.isArray(probe?.mobileWatchs) ? probe.mobileWatchs : [];
+          if (!watches.length) throw new Error('宿主账号没有可用的手表');
+          const watchId = String(watches[0]?.watchId || '').trim();
+          if (!watchId) throw new Error('宿主手表数据缺少设备 ID');
+          watchProbe = ensure(await api.getWatchAccount(watchId));
+          if (!watchProbe || typeof watchProbe !== 'object') {
+            throw new Error('宿主手表账号读取失败');
+          }
+        } catch (error) {
+          cfg.token = previous.token;
+          cfg.userName = previous.userName;
+          cfg.ssoRsaKey = previous.ssoRsaKey;
+          cfg.authId = previous.authId;
+          cfg.mobileId = previous.mobileId;
+          cfg.bizRsaKey = previous.bizRsaKey;
+          cfg.bizDeviceId = previous.bizDeviceId;
+          cfg.bizMac = previous.bizMac;
+          cfg.bizMachineId = previous.bizMachineId;
+          cfg.nDeviceId = previous.nDeviceId;
+          if (previous.parentSessionExpired) api._expiredToken = previous.token;
+          else api._expiredToken = null;
+          throw new Error(/000003/.test(error?.message || '')
+            ? '小天才宿主业务身份验证失败，请回到小天才重新登录后再从网页发起微信登录。'
+            : `宿主账号验证失败：${error?.message || '请重新登录'}`);
+        }
+        const hostAccount = probe?.mobileAccount || {};
+        const verifiedAccount = hostAccount.number || hostAccount.name || account;
+        await finishLogin(verifiedAccount, loginData);
+        if (hostAccount.id) cfg.mobileId = hostAccount.id;
+        if (hostAccount.authId) cfg.authId = hostAccount.authId;
+        device.save(cfg);
         return ok(res, { userName: cfg.userName, loggedIn: true, via: 'wechat' });
       }
 

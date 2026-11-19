@@ -7,7 +7,7 @@ import java.util.Map;
 /** In-memory, origin-bound and single-use authorization results. */
 public final class RequestRegistry {
     private static final int MAX_ACTIVE_REQUESTS = 1;
-    private static final long TERMINAL_RETENTION_MS = 30_000L;
+    private static final long TERMINAL_RETENTION_MS = 90_000L;
 
     private static final class Entry {
         final String state;
@@ -72,8 +72,8 @@ public final class RequestRegistry {
         return snapshot;
     }
 
-    public synchronized AuthorizationSnapshot peek(String state, long now) {
-        Entry entry = byState.get(state);
+    public synchronized AuthorizationSnapshot peek(String origin, String state, long now) {
+        Entry entry = matching(origin, state, now);
         if (entry == null) return null;
         expireIfNeeded(entry, now);
         return entry.snapshot();
@@ -157,6 +157,35 @@ public final class RequestRegistry {
         } else {
             // Keep the two-minute bridge deadline while XTC exchanges the
             // one-time code and downloads the account and watch snapshot.
+            match.status = AuthorizationSnapshot.LOGGING_IN;
+        }
+        return true;
+    }
+
+    /**
+     * Claims the host's official login callback. The official SDK uses the
+     * fixed wire state "login_state", so the bridge's opaque state cannot be
+     * carried through it and the single active request is the intended owner.
+     */
+    public synchronized boolean claimOfficialWechat(String requestState, int errorCode,
+                                                    String error, long now) {
+        Entry match = byState.get(requestState);
+        if (match == null) return false;
+        if (match.snapshot().isTerminal() || now >= match.expiresAt) {
+            fail(match.state, "expired", "授权请求已过期，请重新发起。", now);
+            return true;
+        }
+        match.wechatErrorCode = errorCode;
+        match.wechatError = error;
+        if (errorCode != 0) {
+            match.status = AuthorizationSnapshot.ERROR;
+            match.errorCode = errorCode == -2 ? "wechat_cancelled" : "wechat_error";
+            match.errorMessage = errorCode == -2
+                    ? "你取消了微信授权。"
+                    : (error == null || error.isEmpty() ? "微信授权失败。" : error);
+            match.accountSession = null;
+            match.retainUntil = now + TERMINAL_RETENTION_MS;
+        } else {
             match.status = AuthorizationSnapshot.LOGGING_IN;
         }
         return true;

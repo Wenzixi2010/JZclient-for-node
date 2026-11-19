@@ -270,12 +270,18 @@ public final class MainActivity extends Activity {
             connectionPill.setText("授权成功");
             connectionPill.setTextColor(color(0xFF79D79B));
             connectionPill.setBackground(rounded(0xFF21372A, 100));
-        } else {
+        } else if (captureWechatErrorCode != 0) {
             summary.setText("微信授权未成功");
             summary.setTextColor(color(0xFFFFB4AB));
             connectionPill.setText("授权失败");
             connectionPill.setTextColor(color(0xFFFFB4AB));
             connectionPill.setBackground(rounded(0xFF3B2424, 100));
+        } else {
+            summary.setText("等待网页接收登录结果");
+            summary.setTextColor(color(0xFFC8E6C9));
+            connectionPill.setText("授权完成");
+            connectionPill.setTextColor(color(0xFFC8E6C9));
+            connectionPill.setBackground(rounded(0xFF26352B, 100));
         }
     }
 

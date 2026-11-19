@@ -5,7 +5,7 @@ import { api, post } from '../lib/api';
 import { useResource } from '../lib/hooks';
 import { Badge, Button, Card, ErrorState, Field, Input, LoadingState, Modal, PageHeader, Select, toast } from '../components/ui';
 import { formatTime } from './HomePageParts';
-import { requestWechatAuthorization, type WechatAuthorizationStatus } from '../lib/wechatBridge';
+import { getPendingWechatAuthorization, requestWechatAuthorization, type WechatAuthorizationStatus } from '../lib/wechatBridge';
 import './account-md3.css';
 
 const VERIFY_MODES: Record<string, string> = { 1: '旧设备验证', 2: '家庭成员验证', 3: '短信验证码', 4: '密保问题', 6: '其它方式' };
@@ -19,7 +19,8 @@ export default function AccountPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState('');
   const [loginError, setLoginError] = useState('');
-  const [wechatStatus, setWechatStatus] = useState<WechatAuthorizationStatus | ''>('');
+  const [initialPendingWechat] = useState(() => getPendingWechatAuthorization());
+  const [wechatStatus, setWechatStatus] = useState<WechatAuthorizationStatus | ''>(initialPendingWechat?.status || '');
   const [challenge, setChallenge] = useState<any>(null);
   const [questions, setQuestions] = useState<any[]>([]);
   const [questionId, setQuestionId] = useState('');
@@ -36,7 +37,20 @@ export default function AccountPage() {
   const verificationRequest = useRef(0);
   const mounted = useRef(true);
 
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; verificationCredentials.current = { account: '', password: '' }; }; }, []);
+  useEffect(() => {
+    mounted.current = true;
+    if (initialPendingWechat) {
+      setBusy('wechat');
+      void requestWechatAuthorization({ onStatus: setWechatStatus })
+        .then(({ session }) => post('/api/account/login/wechat', { session }))
+        .then(() => mounted.current ? loginComplete() : undefined)
+        .catch((error: any) => {
+          if (mounted.current && error?.code !== 'aborted') setLoginError(error?.message || '微信登录失败。');
+        })
+        .finally(() => { if (mounted.current) setBusy(''); });
+    }
+    return () => { mounted.current = false; verificationCredentials.current = { account: '', password: '' }; };
+  }, []);
   useEffect(() => { if (account.userName) setUserName(account.userName); }, [account.userName]);
 
   function clearChallenge() {
@@ -172,7 +186,7 @@ export default function AccountPage() {
           <Button type="button" variant="secondary" className="wechat-login-button" onClick={loginWithWechat} loading={busy === 'wechat'} disabled={!!busy}>
             {busy !== 'wechat' && <MessageCircle size={20} aria-hidden="true" />}{busy === 'wechat' ? (wechatText(wechatStatus) || '正在发起授权…') : '使用微信登录'}
           </Button>
-          {busy === 'wechat' && <p className="wechat-login-privacy" role="status">请在小天才确认网页来源并完成微信授权。原始授权码不会离开小天才。</p>}
+          {busy === 'wechat' && <p className="wechat-login-privacy" role="status">请在小天才确认网页来源并完成微信授权，完成后返回这里。原始授权码不会离开小天才。</p>}
         </div>
         <div className="account-login-divider" aria-hidden="true"><span>或使用账号密码</span></div>
         <form className="account-login-form" onSubmit={login}>
