@@ -79,6 +79,14 @@ public final class RequestRegistry {
         return entry.snapshot();
     }
 
+    public synchronized boolean matches(String wireState) {
+        if (wireState == null) return false;
+        for (Entry entry : byState.values()) {
+            if (BridgeContract.sameWechatResponse(entry.wireState, wireState)) return true;
+        }
+        return false;
+    }
+
     synchronized String originForInternal(String state) {
         Entry entry = byState.get(state);
         return entry == null ? null : entry.origin;
@@ -123,7 +131,7 @@ public final class RequestRegistry {
                                                int errorCode, String error, long now) {
         Entry match = null;
         for (Entry entry : byState.values()) {
-            if (entry.wireState.equals(wireState)) {
+            if (BridgeContract.sameWechatResponse(entry.wireState, wireState)) {
                 match = entry;
                 break;
             }

@@ -72,38 +72,45 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
                     protected void beforeHookedMethod(MethodHookParam param) {
                         Object response = param.args[0];
                         if (response == null || !authResponseClass.isInstance(response)) return;
-                        String state = (String) XposedHelpers.getObjectField(response, "state");
-                        if (!BridgeContract.shouldIntercept(state)) return;
+                        // XTC's native login starts SendAuth.Req with this value
+                        // but Android's official SendAuth.Resp leaves state null
+                        // in that flow. Treat a null state as the native login
+                        // response unless a bridge request matches its state.
+                        String wireState = (String) XposedHelpers.getObjectField(response, "state");
+                        boolean nativeLogin = wireState == null
+                                || "login_state".equals(wireState);
+                        boolean bridgeRequest = !nativeLogin && registry.matches(wireState);
+                        if (!nativeLogin && !bridgeRequest) return;
 
                         int errorCode = XposedHelpers.getIntField(response, "errCode");
                         String error = (String) XposedHelpers.getObjectField(response, "errStr");
                         String code = (String) XposedHelpers.getObjectField(response, "code");
                         long now = System.currentTimeMillis();
-                        boolean hostLogin = "login_state".equals(state);
                         AuthorizationSnapshot preview;
-                        if (hostLogin) {
-                            preview = hostLoginSnapshot(state, code, errorCode, error, now);
+                        if (nativeLogin) {
+                            preview = hostLoginSnapshot("login_state", code, errorCode, error, now);
                         } else {
                             boolean owned = registry.completeWechat(
-                                    state, code, errorCode, error, now);
+                                    wireState, code, errorCode, error, now);
                             if (!owned) return;
-                            preview = registry.peek(state, now);
+                            preview = registry.peek(
+                                    wireState.substring(BridgeContract.STATE_PREFIX.length()), now);
                         }
 
                         // Neither the normal XTC login nor the web bridge may
                         // consume the same code through the host broadcast.
                         param.setResult(null);
-                        if (hostLogin && param.thisObject instanceof Activity) {
+                        if (nativeLogin && param.thisObject instanceof Activity) {
                             Toast.makeText((Activity) param.thisObject,
                                     "微信授权已拦截，小天才未使用本次凭证登录",
                                     Toast.LENGTH_LONG).show();
                         }
-                        showCredentialPreview(preview);
+                        if (preview != null) showCredentialPreview(preview);
                         if (param.thisObject instanceof Activity) {
                             ((Activity) param.thisObject).finish();
                         }
                         XposedBridge.log(TAG + "intercepted "
-                                + (hostLogin ? "host login" : "web authorization")
+                                + (nativeLogin ? "host login" : "web authorization")
                                 + ", errCode=" + errorCode);
                     }
                 });

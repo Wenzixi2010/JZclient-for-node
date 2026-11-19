@@ -29,6 +29,19 @@ public final class BridgeContract {
         return state != null && (state.startsWith(STATE_PREFIX) || "login_state".equals(state));
     }
 
+    /** Confirms only real hosts for the JZ HTTP client, not arbitrary CORS origins. */
+    public static String validateHost(String value) {
+        if (value == null) return null;
+        String host = value.trim();
+        if (host.isEmpty() || host.length() > 255) return null;
+        if (host.contains("/") || host.contains("@")) return null;
+        return host;
+    }
+
+    public static boolean sameWechatResponse(String expected, String received) {
+        return expected == null ? received == null : expected.equals(received);
+    }
+
     /**
      * Only a real HTTP(S) browser origin is accepted. In particular, "null",
      * custom schemes, credentials and paths cannot be used as callers.

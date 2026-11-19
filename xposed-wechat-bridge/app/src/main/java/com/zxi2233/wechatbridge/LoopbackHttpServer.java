@@ -117,8 +117,8 @@ final class LoopbackHttpServer {
     }
 
     private Response dispatch(Request request) throws BridgeException, JSONException {
-        if (!validHost(request.headers.get("host"))) {
-            return jsonError(403, "invalid_host", "只允许通过 127.0.0.1 或 localhost 访问。");
+        if (BridgeContract.validateHost(request.headers.get("host")) == null) {
+            return jsonError(403, "invalid_host", "Host 请求头无效。");
         }
         String originHeader = request.headers.get("origin");
         String origin = originHeader == null ? null : BridgeContract.normalizeOrigin(originHeader);
@@ -216,13 +216,6 @@ final class LoopbackHttpServer {
         } catch (JSONException impossible) {
             throw new IllegalStateException(impossible);
         }
-    }
-
-    private static boolean validHost(String host) {
-        if (host == null) return false;
-        host = host.toLowerCase(Locale.ROOT);
-        return ("127.0.0.1:" + BridgeContract.PORT).equals(host)
-                || ("localhost:" + BridgeContract.PORT).equals(host);
     }
 
     private static Request readRequest(BufferedInputStream input) throws IOException, HttpError {

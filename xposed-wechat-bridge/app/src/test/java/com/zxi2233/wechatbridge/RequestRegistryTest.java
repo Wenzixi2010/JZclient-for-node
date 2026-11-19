@@ -37,7 +37,23 @@ public final class RequestRegistryTest {
     }
 
     @Test
-    public void nativeLoginAndWebBridgeStatesAreIntercepted() {
+    public void nativeLoginAlwaysHasANullWireState() {
+        assertTrue(BridgeContract.sameWechatResponse(null, null));
+        assertFalse(BridgeContract.sameWechatResponse(null, "jzwb1.web-state"));
+        assertTrue(BridgeContract.sameWechatResponse("jzwb1.web-state", "jzwb1.web-state"));
+    }
+
+    @Test
+    public void browserHostHeaderAllowsAnySafeHostname() {
+        assertEquals("127.0.0.1:38787", BridgeContract.validateHost("127.0.0.1:38787"));
+        assertEquals("jz-desktop.local:8787", BridgeContract.validateHost("jz-desktop.local:8787"));
+        assertNull(BridgeContract.validateHost(null));
+        assertNull(BridgeContract.validateHost("https://example.com/path"));
+        assertNull(BridgeContract.validateHost("user@example.com"));
+    }
+
+    @Test
+    public void onlyExplicitBridgeResponseStatesAreClassified() {
         assertTrue(BridgeContract.shouldIntercept("login_state"));
         assertTrue(BridgeContract.shouldIntercept(BridgeContract.wireState(STATE)));
         assertFalse(BridgeContract.shouldIntercept("relative_state_1"));
