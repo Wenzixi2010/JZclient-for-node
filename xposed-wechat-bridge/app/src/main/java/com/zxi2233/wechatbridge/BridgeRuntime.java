@@ -1074,6 +1074,8 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
             confirmationDialog = dialog;
         } catch (Throwable error) {
             confirmationState = null;
+            recordDiagnostic("confirmation UI failed: "
+                    + Log.getStackTraceString(error));
             registry.fail(request.state, "host_ui_unavailable",
                     "小天才当前页面无法显示确认框，请打开小天才后重试。",
                     System.currentTimeMillis());

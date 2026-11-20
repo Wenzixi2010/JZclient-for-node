@@ -9,6 +9,8 @@ public final class XposedEntry implements IXposedHookLoadPackage {
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam loadPackageParam) {
+        XposedBridge.log(TAG + "entry invoked: package=" + loadPackageParam.packageName
+                + ", process=" + loadPackageParam.processName);
         if (!BridgeContract.HOST_PACKAGE.equals(loadPackageParam.packageName)) return;
         // A second app process would try to bind the same loopback port. The
         // XTC login activities and WXEntryActivity both live in the main process.
@@ -20,7 +22,8 @@ public final class XposedEntry implements IXposedHookLoadPackage {
             new BridgeRuntime(loadPackageParam.classLoader).install();
             XposedBridge.log(TAG + "loaded in " + BridgeContract.HOST_PACKAGE);
         } catch (Throwable error) {
-            XposedBridge.log(TAG + "initialization failed: " + error);
+            XposedBridge.log(TAG + "initialization failed: "
+                    + android.util.Log.getStackTraceString(error));
         }
     }
 }
