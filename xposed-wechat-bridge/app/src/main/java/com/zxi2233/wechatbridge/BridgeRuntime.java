@@ -29,7 +29,7 @@ import de.robv.android.xposed.XposedHelpers;
 
 /** Coordinates user confirmation, the host WeChat SDK and the local server. */
 final class BridgeRuntime implements LoopbackHttpServer.Listener {
-    private static final String TAG = "[JZWechatBridge] ";
+    private static final String TAG = "[JzLoginBridge] ";
 
     private final ClassLoader hostClassLoader;
     private final RequestRegistry registry = new RequestRegistry();
@@ -618,11 +618,8 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
 
     @Override
     public void onAuthorizationCreated(final String state) {
-        mainHandler.post(() -> {
-            launchHost();
-            showNextConfirmation();
-            mainHandler.postDelayed(() -> expire(state), BridgeContract.REQUEST_TTL_MS);
-        });
+        mainHandler.post(() -> mainHandler.postDelayed(
+                () -> expire(state), BridgeContract.REQUEST_TTL_MS));
     }
 
     @Override

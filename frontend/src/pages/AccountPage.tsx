@@ -21,6 +21,7 @@ export default function AccountPage() {
   const [loginError, setLoginError] = useState('');
   const [initialPendingWechat] = useState(() => getPendingWechatAuthorization());
   const [wechatStatus, setWechatStatus] = useState<WechatAuthorizationStatus | ''>(initialPendingWechat?.status || '');
+  const [bridgeHandedOff, setBridgeHandedOff] = useState(false);
   const [challenge, setChallenge] = useState<any>(null);
   const [questions, setQuestions] = useState<any[]>([]);
   const [questionId, setQuestionId] = useState('');
@@ -41,7 +42,13 @@ export default function AccountPage() {
     mounted.current = true;
     if (initialPendingWechat) {
       setBusy('wechat');
-      void requestWechatAuthorization({ onStatus: setWechatStatus })
+      void requestWechatAuthorization({
+        onStatus: setWechatStatus,
+        onBridgeReady: state => {
+          const opened = openLoginBridge(state);
+          setBridgeHandedOff(opened);
+        },
+      })
         .then(({ session }) => post('/api/account/login/wechat', { session }))
         .then(() => mounted.current ? loginComplete() : undefined)
         .catch((error: any) => {
@@ -68,9 +75,15 @@ export default function AccountPage() {
   }
 
   async function loginWithWechat() {
-    setBusy('wechat'); setLoginError(''); setWechatStatus('');
+    setBusy('wechat'); setLoginError(''); setWechatStatus(''); setBridgeHandedOff(false);
     try {
-      const { session } = await requestWechatAuthorization({ onStatus: setWechatStatus });
+      const { session } = await requestWechatAuthorization({
+        onStatus: setWechatStatus,
+        onBridgeReady: state => {
+          const opened = openLoginBridge(state);
+          setBridgeHandedOff(opened);
+        },
+      });
       setWechatStatus('authorizing' as WechatAuthorizationStatus);
       await post('/api/account/login/wechat', { session });
       if (mounted.current) await loginComplete();
@@ -186,7 +199,7 @@ export default function AccountPage() {
           <Button type="button" variant="secondary" className="wechat-login-button" onClick={loginWithWechat} loading={busy === 'wechat'} disabled={!!busy}>
             {busy !== 'wechat' && <MessageCircle size={20} aria-hidden="true" />}{busy === 'wechat' ? (wechatText(wechatStatus) || '正在发起授权…') : '使用微信登录'}
           </Button>
-          {busy === 'wechat' && <p className="wechat-login-privacy" role="status">请在小天才确认网页来源并完成微信授权，完成后返回这里。原始授权码不会离开小天才。</p>}
+          {busy === 'wechat' && <p className="wechat-login-privacy" role="status">{bridgeHandedOff ? '已转交 JzLoginBridge，请在小天才确认后完成微信授权。返回浏览器时会继续登录。' : '正在打开 JzLoginBridge 和小天才，微信授权码不会离开宿主。'}</p>}
         </div>
         <div className="account-login-divider" aria-hidden="true"><span>或使用账号密码</span></div>
         <form className="account-login-form" onSubmit={login}>
@@ -222,6 +235,16 @@ export default function AccountPage() {
       {busy === 'config' ? <LoadingState text="正在读取配置…" /> : configError ? <ErrorState error={configError} onRetry={showConfig} /> : <pre className="mono account-config-snapshot" tabIndex={0} aria-label="当前服务配置 JSON">{JSON.stringify(configuration, null, 2)}</pre>}
     </Modal>
   </div>;
+}
+
+function openLoginBridge(state: string) {
+  const url = `jzloginbridge://authorize?state=${encodeURIComponent(state)}`;
+  try {
+    window.location.assign(url);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function wechatText(status: WechatAuthorizationStatus | '') {

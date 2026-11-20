@@ -30,6 +30,7 @@ type PendingAuthorization = {
   state: string;
   status: WechatAuthorizationStatus;
   expiresAt: number;
+  handoffStarted?: boolean;
 };
 
 function readPendingAuthorization(): PendingAuthorization | null {
@@ -97,10 +98,12 @@ export function getPendingWechatAuthorization() {
 export async function requestWechatAuthorization({
   signal,
   onStatus,
+  onBridgeReady,
   timeoutMs = 125_000,
 }: {
   signal?: AbortSignal;
   onStatus?: (status: WechatAuthorizationStatus) => void;
+  onBridgeReady?: (state: string) => void;
   timeoutMs?: number;
 } = {}) {
   const controller = new AbortController();
@@ -110,6 +113,8 @@ export async function requestWechatAuthorization({
   let created = false;
   let terminal = false;
   let timedOut = false;
+  const pending = readPendingAuthorization();
+  let handoffStarted = !!pending?.handoffStarted;
   const deadlineMs = Math.max(5_000, Number(timeoutMs) || 125_000);
   let timer: ReturnType<typeof setTimeout> | null = null;
   // Android freezes background browser timers while the native host is in
@@ -126,8 +131,6 @@ export async function requestWechatAuthorization({
     if (document.visibilityState === 'visible') startDeadline();
     else pauseDeadline();
   };
-  const pending = readPendingAuthorization();
-
   try {
     document.addEventListener('visibilitychange', visibilityChanged);
     startDeadline();
@@ -142,6 +145,7 @@ export async function requestWechatAuthorization({
         if (!(error instanceof WechatBridgeError) || error.status !== 404) throw error;
         savePendingAuthorization(null);
         state = '';
+        handoffStarted = false;
       }
     }
     if (!state) {
@@ -154,8 +158,19 @@ export async function requestWechatAuthorization({
         state,
         status: snapshot.status,
         expiresAt: Number(snapshot.expiresAt) || Date.now() + PENDING_AUTHORIZATION_TTL_MS,
+        handoffStarted: false,
       });
       onStatus?.(snapshot.status);
+    }
+    if (!handoffStarted) {
+      savePendingAuthorization({
+        state,
+        status: snapshot.status,
+        expiresAt: Number(snapshot.expiresAt) || Date.now() + PENDING_AUTHORIZATION_TTL_MS,
+        handoffStarted: true,
+      });
+      onBridgeReady?.(state);
+      handoffStarted = true;
     }
     while (true) {
       if (snapshot.status === 'error') {
@@ -177,6 +192,7 @@ export async function requestWechatAuthorization({
         state,
         status: snapshot.status,
         expiresAt: Date.now() + PENDING_AUTHORIZATION_TTL_MS,
+        handoffStarted: true,
       });
     }
   } catch (error) {

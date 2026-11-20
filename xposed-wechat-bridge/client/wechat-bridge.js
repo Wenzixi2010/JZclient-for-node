@@ -74,7 +74,10 @@ function delay(milliseconds, signal) {
   });
 }
 
-/** Starts a real WeChat login through com.xtc.watch and returns its account session. */
+const HANDOFF_QUERY = new URLSearchParams(globalThis.location?.search || '');
+const RESUME_ONLY = HANDOFF_QUERY.has('state');
+
+/** Starts a real WeChat login through JzLoginBridge and com.xtc.watch. */
 export async function requestWechatAuthorization({
   baseUrl = DEFAULT_BASE_URL,
   signal,
@@ -82,7 +85,10 @@ export async function requestWechatAuthorization({
   pollIntervalMs = 800,
   timeoutMs = 125_000,
 } = {}) {
-  const state = randomState();
+  const resumedState = HANDOFF_QUERY.get('state');
+  const state = resumedState && /^[A-Za-z0-9_-]{16,128}$/.test(resumedState)
+    ? resumedState
+    : randomState();
   const controller = new AbortController();
   const abort = () => controller.abort(signal?.reason);
   signal?.addEventListener('abort', abort, { once: true });
@@ -107,11 +113,17 @@ export async function requestWechatAuthorization({
 
   try {
     await getWechatBridgeStatus({ baseUrl, signal: controller.signal });
-    const initial = await request(baseUrl, '/v1/authorizations', {
-      method: 'POST', body: JSON.stringify({ state }), signal: controller.signal,
-    });
-    created = true;
+    const initial = resumedState
+      ? await request(baseUrl, `/v1/authorizations/${state}`, { signal: controller.signal })
+      : await request(baseUrl, '/v1/authorizations', {
+          method: 'POST', body: JSON.stringify({ state }), signal: controller.signal,
+        });
+    created = !resumedState;
     notify(initial);
+    if (!resumedState) {
+      globalThis.location?.assign(
+        `jzloginbridge://authorize?state=${encodeURIComponent(state)}`);
+    }
 
     while (true) {
       await delay(pollIntervalMs, controller.signal);

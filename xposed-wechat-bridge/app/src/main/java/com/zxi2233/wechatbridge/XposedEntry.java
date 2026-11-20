@@ -5,7 +5,7 @@ import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public final class XposedEntry implements IXposedHookLoadPackage {
-    private static final String TAG = "[JZWechatBridge] ";
+    private static final String TAG = "[JzLoginBridge] ";
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam loadPackageParam) {

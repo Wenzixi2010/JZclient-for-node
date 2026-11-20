@@ -2,6 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <queries>
+        <package android:name="com.xtc.watch" />
+    </queries>
+
     <application
         android:allowBackup="false"
         android:icon="@drawable/ic_bridge"
@@ -18,6 +22,14 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="authorize"
+                    android:scheme="jzloginbridge" />
+            </intent-filter>
         </activity>
 
         <meta-data
@@ -25,7 +37,7 @@
             android:value="true" />
         <meta-data
             android:name="xposeddescription"
-            android:value="在小天才家长端内为手机网页提供经确认的微信授权回调" />
+            android:value="从小天才家长端向 JZ WebUI 提供经确认的微信登录结果" />
         <meta-data
             android:name="xposedminversion"
             android:value="54" />

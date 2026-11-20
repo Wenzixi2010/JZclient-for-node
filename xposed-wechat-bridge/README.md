@@ -1,19 +1,19 @@
-# JZ 微信授权桥（LSPosed 模块）
+# JzLoginBridge（LSPosed 模块）
 
 在 `com.xtc.watch` 小天才家长端内复用宿主已有的微信 SDK。手机网页发起请求后，模块在小天才里显示来源确认，再打开微信完成 `snsapi_userinfo` 授权；真实 `code` 直接交给宿主官方登录链路，网页只取得宿主生成的账号会话。
 
-当前版本用于完成真实微信登录。它带有独立模块界面，会显示最近一次宿主登录结果；不会把微信授权码交给网页、写入日志或保存到文件。
+当前版本用于完成真实微信登录。原生界面使用 Jetpack Compose 与 Material Design 3，并沿用 WebUI 的 `JZCatBook` 字体；页面会显示登录是否转交小天才以及最近一次宿主登录结果。模块不会把微信授权码交给网页、写入日志或保存到文件。
 
 ## 安装与启用
 
-1. 安装 `app-debug.apk`。APK 同时提供“JZ 微信授权桥”桌面入口，用于查看最近一次拦截结果。
-2. 打开 LSPosed，进入“模块”，选择 **JZ 微信授权桥** 并启用。
+1. 安装 `app-debug.apk`。APK 在桌面显示为 **JzLoginBridge**，可查看登录流程和最近一次结果。
+2. 打开 LSPosed，进入“模块”，选择 **JzLoginBridge** 并启用。
 3. 作用域只勾选 **小天才家长端**（`com.xtc.watch`）。
 4. 彻底关闭并重新打开小天才家长端，让模块注入新进程。
 5. 每次捕获到微信授权响应，模块会打开凭证界面。也可以从桌面图标手动打开；它只显示当前运行期间的内存数据。如需确认加载结果，在 LSPosed 日志中查找：
 
    ```text
-   [JZWechatBridge] loaded in com.xtc.watch
+   [JzLoginBridge] loaded in com.xtc.watch
    ```
 
 LSPosed 不需要重打包或重签名小天才 APK，因此不会引入 LSPatch 重签名导致的微信签名校验变化。
@@ -42,27 +42,35 @@ const { session, state } = await requestWechatAuthorization({
 
 也可以从 `client/` 目录启动一个静态 HTTP 服务，用手机访问 `demo.html` 做真实授权联调。不要直接用 `file://` 打开，因为模块会拒绝 `Origin: null`。
 
+网页点击“使用微信登录”后，浏览器先创建一次性随机状态，随后打开下面的深链：
+
+```text
+jzloginbridge://authorize?state=<一次性状态>
+```
+
+`JzLoginBridge` 校验状态格式后打开小天才。深链不携带账号、会话、设备标识或微信授权码。
+
 完整流程：
 
 1. 网页检查模块状态并生成 32 字节随机 `state`。
-2. 网页请求模块，小天才显示请求来源。
+2. 网页通过 `jzloginbridge://authorize` 打开模块，模块再启动小天才并显示请求来源。
 3. 用户确认后，模块通过宿主的 `IWXAPI.sendReq()` 打开微信。
 4. 用户在微信中授权。
 5. 桥接把微信 `code` 交给小天才宿主官方 `MobileService.wc()`。
 6. 宿主完成 SSO 换票、下载账号和手表后，桥接读取 `MobileAccount`。
 7. 网页轮询取得账号会话，并校验 `state`。
 
-如果 Android 阻止后台打开小天才，网页停留在 `waiting_for_host`；手动打开小天才即可继续。
+如果浏览器没有直接打开 `JzLoginBridge`，可手动从桌面启动；页面仍会保留待处理的授权状态并从 `waiting_for_host` 继续。手机会在返回浏览器时恢复轮询，不要求浏览器在宿主前台保持运行。
 
-## 凭证预览界面
+## 原生界面
 
 捕获成功后会自动打开模块界面，并显示以下内容：
 
 - 宿主官方账号登录是否完成。
-- 完整 `state`，可单独复制。
 - 请求来源、微信错误码、捕获时间和小天才版本。
+- 独立结果详情使用 Material 3 底部浮层；页面只复制一次性状态，不显示完整宿主会话。
 
-界面使用模块自己的 Activity，不依赖小天才 WebView。`code/state` 只保存在 Activity 内存中，不写入日志、SharedPreferences 或文件。窗口设置了 `FLAG_SECURE`，系统最近任务缩略图和录屏不会显示凭证。再次捕获或点击“清空当前凭证”会覆盖或清除当前内容。
+界面使用模块自己的 Activity，不依赖小天才 WebView。`code/session/state` 只短暂保留在内存中，不写入日志、SharedPreferences 或文件。窗口设置了 `FLAG_SECURE`，系统最近任务缩略图和录屏不会显示凭证。再次捕获或点击“清空结果”会覆盖或清除当前内容。
 
 ## 安全边界
 
@@ -99,5 +107,5 @@ app/build/outputs/apk/debug/app-debug.apk
 - 已在小天才家长端 `9.48.00` 上验证原生 `login_state` 回调、桥接服务启动和 APK 构建。
 - 网页微信登录还要求在实机点击一次真实授权，以确认宿主完成换票后的账号会话格式。
 
-若模块已加载但授权时报 `host_incompatible`，请提供小天才版本和 LSPosed 中 `[JZWechatBridge]` 附近的错误日志。
+若模块已加载但授权时报 `host_incompatible`，请提供小天才版本和 LSPosed 中 `[JzLoginBridge]` 附近的错误日志。
 
