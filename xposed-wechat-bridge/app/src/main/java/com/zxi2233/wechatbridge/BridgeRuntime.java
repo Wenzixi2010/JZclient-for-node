@@ -135,11 +135,18 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
             recordDiagnostic("host launch intent contained an invalid state");
             intent.removeExtra(BridgeContract.EXTRA_DEEP_LINK_STATE);
             intent.removeExtra(BridgeContract.EXTRA_DEEP_LINK_ORIGIN);
+            intent.removeExtra(BridgeContract.EXTRA_DEEP_LINK_RETURN_URL);
+            intent.removeExtra(BridgeContract.EXTRA_DEEP_LINK_RETURN_URI);
+            intent.removeExtra(BridgeContract.EXTRA_DEEP_LINK_RETURN_PACKAGE);
             return;
         }
         try {
             AuthorizationSnapshot snapshot = registry.acceptTransfer(
-                    state, System.currentTimeMillis());
+                    state,
+                    intent.getStringExtra(BridgeContract.EXTRA_DEEP_LINK_RETURN_URL),
+                    intent.getStringExtra(BridgeContract.EXTRA_DEEP_LINK_RETURN_URI),
+                    intent.getStringExtra(BridgeContract.EXTRA_DEEP_LINK_RETURN_PACKAGE),
+                    System.currentTimeMillis());
             recordDiagnostic("host launch intent accepted, status="
                     + snapshot.status);
             activeTransferredState = state;
@@ -154,6 +161,9 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
             // launcher intent after the in-memory request is established.
             intent.removeExtra(BridgeContract.EXTRA_DEEP_LINK_STATE);
             intent.removeExtra(BridgeContract.EXTRA_DEEP_LINK_ORIGIN);
+            intent.removeExtra(BridgeContract.EXTRA_DEEP_LINK_RETURN_URL);
+            intent.removeExtra(BridgeContract.EXTRA_DEEP_LINK_RETURN_URI);
+            intent.removeExtra(BridgeContract.EXTRA_DEEP_LINK_RETURN_PACKAGE);
             intent.setData(null);
         }
     }
@@ -536,15 +546,15 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
             if (sessionJson == null || sessionJson.isEmpty()) {
                 throw new IllegalStateException("host session is unavailable");
             }
-            boolean completed = registry.completeWithAccount(
-                    wireState, sessionJson, 0, null, System.currentTimeMillis());
-            if (completed) {
+            RequestRegistry.InternalCompletion completion =
+                    registry.completeWithAccountForInternal(
+                            wireState, sessionJson, 0, null,
+                            System.currentTimeMillis());
+            if (completion != null) {
                 recordDiagnostic("host account login completed");
-                String state = wireState.substring(BridgeContract.STATE_PREFIX.length());
-                String origin = registry.originForInternal(state);
-                AuthorizationSnapshot request = registry.peek(
-                        origin, state, System.currentTimeMillis());
-                if (request != null) showCredentialPreview(request);
+                showCredentialPreview(
+                        completion.snapshot, completion.origin,
+                        completion.returnTarget);
             }
         } catch (Throwable error) {
             recordDiagnostic("reading host account failed: "
@@ -734,14 +744,14 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
         }
     }
 
-    private void showCredentialPreview(AuthorizationSnapshot snapshot) {
+    private void showCredentialPreview(AuthorizationSnapshot snapshot, String origin,
+                                       RequestRegistry.ReturnTarget returnTarget) {
         if (snapshot == null || !snapshot.isTerminal()) return;
         Context context = AndroidAppHelper.currentApplication();
         if (context == null) return;
-        // One result opens one preview even if the SDK delivers a duplicate.
+        // The registry already makes completion and redirect claiming atomic,
+        // so duplicate SDK callbacks cannot open a second preview.
         String previewKey = snapshot.state + ":" + snapshot.status + ":" + snapshot.expiresAt;
-        if (lastPreviewState.equals(previewKey)) return;
-        lastPreviewState = previewKey;
         try {
             Intent preview = new Intent();
             preview.setClassName(BridgeContract.MODULE_PACKAGE,
@@ -751,18 +761,72 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
             if (snapshot.accountSession != null) {
                 preview.putExtra(MainActivity.EXTRA_SESSION, snapshot.accountSession);
             }
-            String origin = registry.originForInternal(snapshot.state);
             preview.putExtra(MainActivity.EXTRA_ORIGIN,
                     origin == null ? "小天才家长端 · 原生微信登录" : origin);
             preview.putExtra(MainActivity.EXTRA_WECHAT_ERROR_CODE, snapshot.wechatErrorCode);
             preview.putExtra(MainActivity.EXTRA_WECHAT_ERROR, snapshot.wechatError);
             preview.putExtra(MainActivity.EXTRA_CAPTURED_AT, System.currentTimeMillis());
             preview.putExtra(MainActivity.EXTRA_HOST_VERSION, hostVersion());
+            if (returnTarget != null) {
+                if (returnTarget.url != null) {
+                    preview.putExtra(MainActivity.EXTRA_RETURN_URL, returnTarget.url);
+                }
+                if (returnTarget.uri != null) {
+                    preview.putExtra(MainActivity.EXTRA_RETURN_URI, returnTarget.uri);
+                }
+                if (returnTarget.packageName != null) {
+                    preview.putExtra(
+                            MainActivity.EXTRA_RETURN_PACKAGE, returnTarget.packageName);
+                }
+            }
             preview.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-            context.startActivity(preview);
+            Activity activity = resumedActivity.get();
+            Context launcher = activity != null && !activity.isFinishing()
+                    && !activity.isDestroyed() ? activity : context;
+            launcher.startActivity(preview);
+            lastPreviewState = previewKey;
         } catch (Throwable error) {
-            XposedBridge.log(TAG + "preview could not be opened: "
+            boolean returned = launchReturnTarget(context, returnTarget);
+            recordDiagnostic("preview could not be opened: "
+                    + error.getClass().getSimpleName()
+                    + ", direct return=" + returned);
+        }
+    }
+
+    private boolean launchReturnTarget(Context context,
+                                       RequestRegistry.ReturnTarget target) {
+        if (context == null || target == null) return false;
+        if (target.uri != null) {
+            if (startExternalIntent(context, new Intent(
+                    Intent.ACTION_VIEW, android.net.Uri.parse(target.uri)))) {
+                return true;
+            }
+        }
+        if (target.packageName != null) {
+            Intent packageIntent = context.getPackageManager()
+                    .getLaunchIntentForPackage(target.packageName);
+            if (packageIntent != null
+                    && startExternalIntent(context, packageIntent)) {
+                return true;
+            }
+        }
+        if (target.url != null) {
+            Intent browser = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(target.url));
+            browser.addCategory(Intent.CATEGORY_BROWSABLE);
+            return startExternalIntent(context, browser);
+        }
+        return false;
+    }
+
+    private boolean startExternalIntent(Context context, Intent intent) {
+        try {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            context.startActivity(intent);
+            return true;
+        } catch (Throwable error) {
+            recordDiagnostic("direct return target failed: "
                     + error.getClass().getSimpleName());
+            return false;
         }
     }
 

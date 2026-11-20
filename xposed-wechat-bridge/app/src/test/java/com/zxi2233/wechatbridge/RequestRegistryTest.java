@@ -64,6 +64,95 @@ public final class RequestRegistryTest {
     }
 
     @Test
+    public void successfulLoginCanReturnOnlyToTheRequestingPageOnce() throws Exception {
+        String returnUrl = ORIGIN + "/#/account?source=wechat";
+        registry.create(ORIGIN, STATE, NOW);
+        assertTrue(registry.setReturnTargets(
+                ORIGIN, STATE, returnUrl, "", "", NOW));
+        registry.claimWechat(BridgeContract.wireState(STATE), 0, null, NOW + 100);
+        assertTrue(registry.completeWithAccount(BridgeContract.wireState(STATE),
+                "{\"ticket\":\"host-session\"}", 0, null, NOW + 200));
+        assertEquals(returnUrl, registry.claimReturnTargetForInternal(STATE).url);
+        assertNull(registry.claimReturnTargetForInternal(STATE));
+    }
+
+    @Test
+    public void returnUrlMustStayOnTheAuthorizedOrigin() throws Exception {
+        registry.create(ORIGIN, STATE, NOW);
+        assertFalse(registry.setReturnTargets(
+                ORIGIN, STATE, "https://evil.example/steal", "", "", NOW));
+        assertFalse(registry.setReturnTargets(
+                ORIGIN, STATE, "javascript:alert(1)", "", "", NOW));
+        assertNull(registry.claimReturnTargetForInternal(STATE));
+    }
+
+    @Test
+    public void successfulLoginCanReturnToANativeCallerOnce() throws Exception {
+        String returnUri = "jzclient://wechat-auth/complete";
+        registry.create(ORIGIN, STATE, NOW);
+        assertTrue(registry.setReturnTargets(ORIGIN, STATE,
+                ORIGIN + "/account", returnUri, "com.zxi.example", NOW));
+        registry.claimWechat(BridgeContract.wireState(STATE), 0, null, NOW + 100);
+        RequestRegistry.InternalCompletion completion =
+                registry.completeWithAccountForInternal(
+                        BridgeContract.wireState(STATE),
+                        "{\"ticket\":\"host-session\"}", 0, null, NOW + 200);
+
+        assertEquals(returnUri, completion.returnTarget.uri);
+        assertEquals("com.zxi.example", completion.returnTarget.packageName);
+        assertNull(registry.claimReturnTargetForInternal(STATE));
+    }
+
+    @Test
+    public void deepLinkReturnTargetSurvivesBrowserBinding() throws Exception {
+        String returnUrl = ORIGIN + "/#/account";
+        String returnUri = "jzclient://wechat-auth/complete";
+        registry.acceptTransfer(
+                STATE, returnUrl, returnUri, "com.zxi.example", NOW);
+        assertTrue(registry.bindTransfer(ORIGIN, STATE, NOW + 1));
+        registry.claimOfficialWechat(STATE, 0, null, NOW + 100);
+        RequestRegistry.InternalCompletion completion =
+                registry.completeWithAccountForInternal(
+                        BridgeContract.wireState(STATE),
+                        "{\"ticket\":\"host-session\"}", 0, null, NOW + 200);
+
+        assertEquals(returnUrl, completion.returnTarget.url);
+        assertEquals(returnUri, completion.returnTarget.uri);
+        assertEquals("com.zxi.example", completion.returnTarget.packageName);
+    }
+
+    @Test
+    public void browserRequestCannotReplaceDeepLinkReturnTargets() throws Exception {
+        String returnUrl = ORIGIN + "/#/account";
+        String returnUri = "jzclient://wechat-auth/complete";
+        registry.acceptTransfer(
+                STATE, returnUrl, returnUri, "com.zxi.example", NOW);
+        assertTrue(registry.bindTransfer(ORIGIN, STATE, NOW + 1));
+        registry.claimOfficialWechat(STATE, 0, null, NOW + 100);
+        RequestRegistry.InternalCompletion completion =
+                registry.completeWithAccountForInternal(
+                        BridgeContract.wireState(STATE),
+                        "{\"ticket\":\"host-session\"}", 0, null, NOW + 200);
+
+        assertEquals(returnUrl, completion.returnTarget.url);
+        assertEquals(returnUri, completion.returnTarget.uri);
+    }
+
+    @Test
+    public void nativeReturnTargetsRejectUnsafeSchemesAndPackages() {
+        assertEquals("", BridgeContract.validateReturnUri("https://example.com/return"));
+        assertEquals("", BridgeContract.validateReturnUri("javascript:alert(1)"));
+        assertEquals("", BridgeContract.validateReturnUri("intent://example.com"));
+        assertEquals("jzclient://auth/complete",
+                BridgeContract.validateReturnUri("jzclient://auth/complete"));
+        assertEquals("", BridgeContract.validateReturnPackage("../unsafe"));
+        assertEquals("", BridgeContract.validateReturnPackage(
+                BridgeContract.MODULE_PACKAGE));
+        assertEquals("com.zxi.example",
+                BridgeContract.validateReturnPackage("com.zxi.example"));
+    }
+
+    @Test
     public void nativeLoginAlwaysHasANullWireState() {
         assertTrue(BridgeContract.sameWechatResponse(null, null));
         assertFalse(BridgeContract.sameWechatResponse(null, "jzwb1.web-state"));

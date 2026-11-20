@@ -37,6 +37,7 @@ import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Error
 import androidx.compose.material.icons.rounded.Fingerprint
 import androidx.compose.material.icons.rounded.Key
+import androidx.compose.material.icons.rounded.OpenInBrowser
 import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Shield
@@ -172,6 +173,7 @@ private val BridgeTypography = Typography(
 @OptIn(ExperimentalMaterial3Api::class)
 fun JzLoginBridgeApp(
     onOpenHost: () -> Unit,
+    onReturnToCaller: () -> Unit,
     onClearSavedIntent: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -180,6 +182,7 @@ fun JzLoginBridgeApp(
     var detailsOpen by rememberSaveable { mutableStateOf(false) }
     val hostHandoff = JzLoginBridgeState.hostHandoff
     val hostUnavailable = JzLoginBridgeState.hostUnavailable
+    val returnUnavailable = JzLoginBridgeState.returnUnavailable
     val status = when {
         result?.hasSession == true -> BridgeStatus.SUCCESS
         result?.isTerminal == true -> BridgeStatus.ERROR
@@ -256,7 +259,9 @@ fun JzLoginBridgeApp(
                                     status = current,
                                     result = result,
                                     hostHandoff = hostHandoff,
+                                    returnUnavailable = returnUnavailable,
                                     onOpenHost = onOpenHost,
+                                    onReturnToCaller = onReturnToCaller,
                                     onDetails = { detailsOpen = true },
                                 )
                             }
@@ -383,7 +388,9 @@ private fun StatusHero(
     status: BridgeStatus,
     result: BridgeResultUi?,
     hostHandoff: Boolean,
+    returnUnavailable: Boolean,
     onOpenHost: () -> Unit,
+    onReturnToCaller: () -> Unit,
     onDetails: () -> Unit,
 ) {
     val success = status == BridgeStatus.SUCCESS
@@ -473,6 +480,24 @@ private fun StatusHero(
                     Text(if (hostHandoff) "再次打开小天才" else "打开小天才并登录")
                 }
             } else {
+                if (success && JzLoginBridgeState.hasReturnTarget()) {
+                    FilledTonalButton(
+                        onClick = onReturnToCaller,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(18.dp),
+                    ) {
+                        Icon(Icons.Rounded.OpenInBrowser, contentDescription = null, modifier = Modifier.size(19.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            if (returnUnavailable) {
+                                "再次返回调用方"
+                            } else {
+                                "返回调用方"
+                            },
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                }
                 FilledTonalButton(
                     onClick = onDetails,
                     modifier = Modifier.fillMaxWidth(),
@@ -703,7 +728,7 @@ private fun ReadyPreview() {
         Surface(color = MaterialTheme.colorScheme.background) {
             Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         BridgeTopBar(connected = true) {}
-                StatusHero(BridgeStatus.READY, null, false, {}, {})
+                StatusHero(BridgeStatus.READY, null, false, false, {}, {}, {})
                 StepsCard()
             }
         }

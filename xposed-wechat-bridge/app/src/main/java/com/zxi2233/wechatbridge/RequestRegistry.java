@@ -10,6 +10,37 @@ public final class RequestRegistry {
     private static final long TERMINAL_RETENTION_MS = 90_000L;
     private static final String TRANSFER_PREFIX = "jz-transfer:";
 
+    static final class ReturnTarget {
+        final String url;
+        final String uri;
+        final String packageName;
+
+        ReturnTarget(String url, String uri, String packageName) {
+            this.url = url;
+            this.uri = uri;
+            this.packageName = packageName;
+        }
+
+        boolean isEmpty() {
+            return (url == null || url.isEmpty())
+                    && (uri == null || uri.isEmpty())
+                    && (packageName == null || packageName.isEmpty());
+        }
+    }
+
+    static final class InternalCompletion {
+        final AuthorizationSnapshot snapshot;
+        final String origin;
+        final ReturnTarget returnTarget;
+
+        InternalCompletion(AuthorizationSnapshot snapshot, String origin,
+                           ReturnTarget returnTarget) {
+            this.snapshot = snapshot;
+            this.origin = origin;
+            this.returnTarget = returnTarget;
+        }
+    }
+
     private static final class Entry {
         final String state;
         final String wireState;
@@ -22,6 +53,10 @@ public final class RequestRegistry {
         String wechatError;
         String errorCode;
         String errorMessage;
+        String returnUrl;
+        String returnUri;
+        String returnPackage;
+        boolean returnTriggered;
         long retainUntil = Long.MAX_VALUE;
 
         Entry(String state, String origin, long now) {
@@ -96,6 +131,33 @@ public final class RequestRegistry {
     }
 
     /**
+     * Receives navigation hints from the verified deep link. The page URL is
+     * normalized later against the browser Origin that binds this request;
+     * native targets are constrained before they enter the host process.
+     */
+    public synchronized AuthorizationSnapshot acceptTransfer(
+            String state, String returnUrl, String returnUri,
+            String returnPackage, long now) throws BridgeException {
+        acceptTransfer(state, now);
+        Entry entry = byState.get(state);
+        if (entry == null) {
+            throw new BridgeException(404, "not_found", "授权请求不存在。");
+        }
+        if (returnUrl != null && !returnUrl.isEmpty()) {
+            entry.returnUrl = returnUrl.length() <= 2048 ? returnUrl : null;
+        }
+        if (returnUri != null && !returnUri.isEmpty()) {
+            entry.returnUri = emptyToNull(
+                    BridgeContract.validateReturnUri(returnUri));
+        }
+        if (returnPackage != null && !returnPackage.isEmpty()) {
+            entry.returnPackage = emptyToNull(
+                    BridgeContract.validateReturnPackage(returnPackage));
+        }
+        return entry.snapshot();
+    }
+
+    /**
      * Binds a deep-link placeholder to the first browser origin that polls it.
      * Subsequent requests from any other origin still fail closed.
      */
@@ -119,6 +181,11 @@ public final class RequestRegistry {
             bound.wechatError = entry.wechatError;
             bound.errorCode = entry.errorCode;
             bound.errorMessage = entry.errorMessage;
+            bound.returnUrl = emptyToNull(
+                    BridgeContract.validateReturnUrl(entry.returnUrl, normalized));
+            bound.returnUri = entry.returnUri;
+            bound.returnPackage = entry.returnPackage;
+            bound.returnTriggered = entry.returnTriggered;
             bound.retainUntil = entry.retainUntil;
             byState.put(state, bound);
             return true;
@@ -154,6 +221,34 @@ public final class RequestRegistry {
     synchronized String originForInternal(String state) {
         Entry entry = byState.get(state);
         return entry == null ? null : entry.origin;
+    }
+
+    public synchronized boolean setReturnTargets(String origin, String state,
+                                                 String returnUrl, String returnUri,
+                                                 String returnPackage, long now) {
+        Entry entry = matching(origin, state, now);
+        if (entry == null) return false;
+        entry.returnUrl = emptyToNull(BridgeContract.validateReturnUrl(returnUrl, origin));
+        entry.returnUri = emptyToNull(BridgeContract.validateReturnUri(returnUri));
+        entry.returnPackage = emptyToNull(BridgeContract.validateReturnPackage(returnPackage));
+        return entry.returnUrl != null
+                || entry.returnUri != null
+                || entry.returnPackage != null;
+    }
+
+    /** Claims the one automatic redirect associated with a successful result. */
+    synchronized ReturnTarget claimReturnTargetForInternal(String state) {
+        Entry entry = byState.get(state);
+        if (entry == null || entry.returnTriggered
+                || !AuthorizationSnapshot.AUTHORIZED.equals(entry.status)
+                || (entry.returnUrl == null && entry.returnUri == null
+                && entry.returnPackage == null)) {
+            return null;
+        }
+        entry.returnTriggered = true;
+        ReturnTarget target = new ReturnTarget(
+                entry.returnUrl, entry.returnUri, entry.returnPackage);
+        return target.isEmpty() ? null : target;
     }
 
     public synchronized AuthorizationSnapshot nextPending(long now) {
@@ -272,6 +367,28 @@ public final class RequestRegistry {
         return true;
     }
 
+    /** Completes a successful login and claims its redirect while holding one lock. */
+    synchronized InternalCompletion completeWithAccountForInternal(
+            String wireState, String accountSession, int wechatErrorCode,
+            String wechatError, long now) {
+        Entry match = matchingWireState(wireState);
+        if (match == null || !AuthorizationSnapshot.LOGGING_IN.equals(match.status)) {
+            return null;
+        }
+        if (accountSession == null || accountSession.isEmpty()) {
+            fail(match.state, "missing_host_session",
+                    "小天才登录成功，但没有返回可用的账号会话。", now);
+            return new InternalCompletion(match.snapshot(), match.origin, null);
+        }
+        match.status = AuthorizationSnapshot.AUTHORIZED;
+        match.accountSession = accountSession;
+        match.wechatErrorCode = wechatErrorCode;
+        match.wechatError = wechatError;
+        match.retainUntil = now + TERMINAL_RETENTION_MS;
+        return new InternalCompletion(
+                match.snapshot(), match.origin, claimReturnTarget(match));
+    }
+
     public synchronized boolean failLogin(String wireState, String errorCode,
                                           String message, long now) {
         Entry match = matchingWireState(wireState);
@@ -285,6 +402,22 @@ public final class RequestRegistry {
             if (BridgeContract.sameWechatResponse(entry.wireState, wireState)) return entry;
         }
         return null;
+    }
+
+    private static String emptyToNull(String value) {
+        return value == null || value.isEmpty() ? null : value;
+    }
+
+    private static ReturnTarget claimReturnTarget(Entry entry) {
+        if (entry.returnTriggered
+                || (entry.returnUrl == null && entry.returnUri == null
+                && entry.returnPackage == null)) {
+            return null;
+        }
+        entry.returnTriggered = true;
+        ReturnTarget target = new ReturnTarget(
+                entry.returnUrl, entry.returnUri, entry.returnPackage);
+        return target.isEmpty() ? null : target;
     }
 
     public synchronized boolean cancel(String origin, String state, long now) {

@@ -183,13 +183,25 @@ final class LoopbackHttpServer {
         if ("/v1/authorizations".equals(path) && "POST".equals(request.method)) {
             if (request.body == null) throw new BridgeException(400, "body_required", "需要 JSON 请求体。");
             String state;
+            String returnUrl = "";
+            String returnUri = "";
+            String returnPackage = "";
             try {
                 JSONObject json = new JSONObject(new String(request.body, StandardCharsets.UTF_8));
                 state = json.getString("state");
+                returnUrl = json.optString("returnUrl", "");
+                returnUri = json.optString("returnUri", "");
+                returnPackage = json.optString("returnPackage", "");
             } catch (JSONException error) {
                 throw new BridgeException(400, "invalid_json", "请求 JSON 无效。");
             }
             if (registry.bindTransfer(origin, state, System.currentTimeMillis())) {
+                // A deep-link transfer already contains the caller's targets.
+                // An empty POST is the browser resuming that same request.
+                if (!(returnUrl.isEmpty() && returnUri.isEmpty() && returnPackage.isEmpty())) {
+                    registry.setReturnTargets(origin, state, returnUrl, returnUri,
+                            returnPackage, System.currentTimeMillis());
+                }
                 AuthorizationSnapshot snapshot = registry.peek(
                         origin, state, System.currentTimeMillis());
                 if (snapshot == null) {
@@ -199,6 +211,8 @@ final class LoopbackHttpServer {
                 return new Response(202, snapshotJson(snapshot), origin);
             }
             AuthorizationSnapshot snapshot = registry.create(origin, state, System.currentTimeMillis());
+            registry.setReturnTargets(origin, state, returnUrl, returnUri,
+                    returnPackage, System.currentTimeMillis());
             listener.onAuthorizationCreated(state);
             return new Response(202, snapshotJson(snapshot), origin);
         }

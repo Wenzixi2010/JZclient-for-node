@@ -31,7 +31,16 @@ type PendingAuthorization = {
   status: WechatAuthorizationStatus;
   expiresAt: number;
   handoffStarted?: boolean;
+  returnUrl?: string;
 };
+
+function nativeReturnTargets() {
+  const source = new URLSearchParams(window.location.search);
+  return {
+    returnUri: source.get('bridgeReturnUri')?.trim() || '',
+    returnPackage: source.get('bridgeReturnPackage')?.trim() || '',
+  };
+}
 
 function readPendingAuthorization(): PendingAuthorization | null {
   try {
@@ -175,6 +184,7 @@ export async function requestWechatAuthorization({
       status: 'waiting_for_host',
       expiresAt: Date.now() + PENDING_AUTHORIZATION_TTL_MS,
       handoffStarted: true,
+      returnUrl: window.location.href,
     });
     onStatus?.('waiting_for_host');
     onBridgeReady?.(state);
@@ -215,8 +225,11 @@ export async function requestWechatAuthorization({
     }
     if (!snapshot) {
       if (!state) state = randomState();
+      const targets = nativeReturnTargets();
       snapshot = await bridgeRequest('/v1/authorizations', {
-        method: 'POST', body: JSON.stringify({ state }), signal: controller.signal,
+        method: 'POST',
+        body: JSON.stringify({ state, returnUrl: window.location.href, ...targets }),
+        signal: controller.signal,
       });
       created = true;
     }
@@ -225,6 +238,7 @@ export async function requestWechatAuthorization({
       status: snapshot.status,
       expiresAt: Number(snapshot.expiresAt) || Date.now() + PENDING_AUTHORIZATION_TTL_MS,
       handoffStarted: true,
+      returnUrl: pending?.returnUrl || window.location.href,
     });
     onStatus?.(snapshot.status);
     while (true) {
@@ -248,6 +262,7 @@ export async function requestWechatAuthorization({
         status: snapshot.status,
         expiresAt: Date.now() + PENDING_AUTHORIZATION_TTL_MS,
         handoffStarted: true,
+        returnUrl: pending?.returnUrl || window.location.href,
       });
     }
   } catch (error) {

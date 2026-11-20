@@ -197,7 +197,7 @@ export default function AccountPage() {
           <Button type="button" variant="secondary" className="wechat-login-button" onClick={loginWithWechat} loading={busy === 'wechat'} disabled={!!busy}>
             {busy !== 'wechat' && <MessageCircle size={20} aria-hidden="true" />}{busy === 'wechat' ? (wechatText(wechatStatus) || '正在发起授权…') : '使用微信登录'}
           </Button>
-          {busy === 'wechat' && <p className="wechat-login-privacy" role="status">{bridgeHandedOff ? '已打开 JzLoginBridge。JzLoginBridge 会启动小天才；返回浏览器后继续授权。' : '正在打开 JzLoginBridge，微信授权码不会离开宿主。'}</p>}
+          {busy === 'wechat' && <p className="wechat-login-privacy" role="status">{bridgeHandedOff ? '已打开 JzLoginBridge。授权完成后会自动返回原来的网页，并继续完成 JZ 登录。' : '正在打开 JzLoginBridge，微信授权码不会离开宿主。'}</p>}
         </div>
         <div className="account-login-divider" aria-hidden="true"><span>或使用账号密码</span></div>
         <form className="account-login-form" onSubmit={login}>
@@ -236,9 +236,20 @@ export default function AccountPage() {
 }
 
 function openLoginBridge(state: string) {
-  const url = `jzloginbridge://authorize?state=${encodeURIComponent(state)}`;
+  const params = new URLSearchParams({ state, returnUrl: window.location.href });
+  const source = new URLSearchParams(window.location.search);
+  const returnUri = source.get('bridgeReturnUri')?.trim();
+  const returnPackage = source.get('bridgeReturnPackage')?.trim();
+  if (returnUri) params.set('returnUri', returnUri);
+  if (returnPackage) params.set('returnPackage', returnPackage);
+  const url = `jzloginbridge://authorize?${params.toString()}`;
   try {
-    window.location.assign(url);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.style.display = 'none';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
     return true;
   } catch {
     return false;
