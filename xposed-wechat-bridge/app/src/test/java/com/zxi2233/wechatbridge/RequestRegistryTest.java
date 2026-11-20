@@ -129,6 +129,23 @@ public final class RequestRegistryTest {
     }
 
     @Test
+    public void explicitConfirmationIsRequiredBeforeWechatLaunch() throws Exception {
+        registry.acceptTransfer(STATE, NOW);
+        registry.bindTransfer(ORIGIN, STATE, NOW + 1);
+        assertEquals(AuthorizationSnapshot.WAITING_FOR_HOST,
+                registry.peek(ORIGIN, STATE, NOW + 2).status);
+        assertTrue(registry.mark(STATE, AuthorizationSnapshot.WAITING_FOR_HOST,
+                AuthorizationSnapshot.AWAITING_CONFIRMATION, NOW + 3));
+        assertTrue(registry.mark(STATE, AuthorizationSnapshot.AWAITING_CONFIRMATION,
+                AuthorizationSnapshot.LAUNCHING_WECHAT, NOW + 4));
+        assertTrue(registry.mark(STATE, AuthorizationSnapshot.LAUNCHING_WECHAT,
+                AuthorizationSnapshot.WAITING_FOR_WECHAT, NOW + 5));
+        assertFalse(registry.mark(STATE, AuthorizationSnapshot.AWAITING_CONFIRMATION,
+                AuthorizationSnapshot.LAUNCHING_WECHAT, NOW + 6));
+        assertTrue(registry.claimOfficialWechat(STATE, 0, null, NOW + 7));
+    }
+
+    @Test
     public void duplicateAndInvalidStatesAreRejected() throws Exception {
         registry.create(ORIGIN, STATE, NOW);
         assertEquals(409, assertThrows(BridgeException.class, () ->

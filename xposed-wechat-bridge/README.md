@@ -53,8 +53,8 @@ jzloginbridge://authorize?state=<一次性状态>&returnUrl=<原网页地址>
 完整流程：
 
 1. 网页检查模块状态并生成 32 字节随机 `state`。
-2. 网页通过 `jzloginbridge://authorize` 打开模块，模块再启动小天才。宿主进程收到一次性状态后立即等待微信组件就绪并继续官方登录，不要求浏览器在后台保持轮询。
-3. 用户确认后，模块通过宿主的 `IWXAPI.sendReq()` 打开微信。
+2. 网页通过 `jzloginbridge://authorize` 打开模块，模块再启动小天才。宿主进程收到一次性状态后保持 `waiting_for_host`，等待前台窗口、输入焦点和微信组件连续稳定就绪，再显示 Material 3 确认框。
+3. 只有用户点击“允许并登录”后，模块才通过宿主的 `IWXAPI.sendReq()` 打开微信；取消、返回键或点击遮罩会结束本次请求。
 4. 用户在微信中授权。
 5. 桥接把微信 `code` 交给小天才宿主官方 `MobileService.wc()`。
 6. 宿主完成 SSO 换票、下载账号和手表后，桥接读取 `MobileAccount`。

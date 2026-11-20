@@ -1,8 +1,8 @@
 package com.zxi2233.wechatbridge;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.app.AndroidAppHelper;
+import android.app.Dialog;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -13,6 +13,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.view.View;
 
 import org.json.JSONObject;
 
@@ -30,6 +31,7 @@ import de.robv.android.xposed.XposedHelpers;
 /** Coordinates user confirmation, the host WeChat SDK and the local server. */
 final class BridgeRuntime implements LoopbackHttpServer.Listener {
     private static final String TAG = "[JzLoginBridge] ";
+    private static final long HOST_READY_STABLE_MS = 800L;
 
     private final ClassLoader hostClassLoader;
     private final RequestRegistry registry = new RequestRegistry();
@@ -37,7 +39,7 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
     private final List<String> diagnosticLines = new ArrayList<>();
 
     private WeakReference<Activity> resumedActivity = new WeakReference<>(null);
-    private AlertDialog confirmationDialog;
+    private Dialog confirmationDialog;
     private String confirmationState;
     private boolean retryScheduled;
     private long lastHostLaunch;
@@ -50,6 +52,9 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
     private int officialHostSessionRetries;
     private volatile long confirmationGraceUntil;
     private String activeTransferredState;
+    private long hostReadySince;
+    private boolean hostWasReady;
+    private boolean hostReadyCheckScheduled;
 
     private void recordDiagnostic(String message) {
         String line = System.currentTimeMillis() + " " + message;
@@ -144,12 +149,10 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
             recordDiagnostic("host launch intent accepted, status="
                     + snapshot.status);
             activeTransferredState = state;
-            // Start the official login from the host process as soon as this
-            // deep link is received. Android can suspend the browser's timers
-            // while XTC is opening, so the login must not depend on the web page
-            // returning a loopback bind before it can proceed.
-            mainHandler.post(() -> launchTransferredLoginWhenReady(state));
-            recordDiagnostic("host-owned transfer started; browser binding may follow");
+            hostReadySince = 0L;
+            hostWasReady = false;
+            mainHandler.post(this::showNextConfirmationWhenHostReady);
+            recordDiagnostic("host transfer accepted; waiting for stable host UI");
         } catch (BridgeException error) {
             recordDiagnostic("host launch intent rejected: " + error.code);
             registry.fail(state, error.code, error.getMessage(),
@@ -164,37 +167,13 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
         }
     }
 
-    private void launchTransferredLoginWhenReady(final String state) {
-        if (!state.equals(activeTransferredState)) return;
-        if (!wxApiReady) {
-            scheduleTransferredLoginRetry(state);
-            return;
-        }
-        Activity activity = resumedActivity.get();
-        if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
-            scheduleTransferredLoginRetry(state);
-            return;
-        }
-        AuthorizationSnapshot current = registry.nextPending(
-                System.currentTimeMillis());
-        if (current == null || !state.equals(current.state)) return;
-        if (!registry.mark(state, AuthorizationSnapshot.WAITING_FOR_HOST,
-                AuthorizationSnapshot.AWAITING_CONFIRMATION,
-                System.currentTimeMillis())) {
-            return;
-        }
-        if (!registry.mark(state, AuthorizationSnapshot.AWAITING_CONFIRMATION,
-                AuthorizationSnapshot.LAUNCHING_WECHAT,
-                System.currentTimeMillis())) {
-            return;
-        }
-        startOfficialWechat(state);
-    }
-
-    private void scheduleTransferredLoginRetry(final String state) {
-        if (!state.equals(activeTransferredState)) return;
-        mainHandler.postDelayed(
-                () -> launchTransferredLoginWhenReady(state), 200L);
+    private void scheduleHostReadyCheck() {
+        if (hostReadyCheckScheduled) return;
+        hostReadyCheckScheduled = true;
+        mainHandler.postDelayed(() -> {
+            hostReadyCheckScheduled = false;
+            showNextConfirmationWhenHostReady();
+        }, 200L);
     }
 
     private void hookWechatApiInitialization() {
@@ -214,6 +193,8 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
                                         && apiClass.isInstance(api);
                                 recordDiagnostic("WeChat API initialization observed, ready="
                                         + wxApiReady);
+                                hostReadySince = 0L;
+                                if (wxApiReady) scheduleHostReadyCheck();
                             } catch (Throwable error) {
                                 recordDiagnostic("WeChat API readiness check failed: " + error);
                             }
@@ -323,18 +304,45 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
             @Override
             protected void afterHookedMethod(MethodHookParam param) {
                 resumedActivity = new WeakReference<>((Activity) param.thisObject);
+                hostReadySince = 0L;
+                hostWasReady = false;
                 scheduleOfficialLoginReceiver();
                 ensureWechatApiReady();
-                showNextConfirmation();
+                showNextConfirmationWhenHostReady();
             }
         });
         XposedHelpers.findAndHookMethod(Activity.class, "onPause", new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam param) {
                 Activity current = resumedActivity.get();
-                if (current == param.thisObject) resumedActivity.clear();
+                if (current == param.thisObject) {
+                    resumedActivity.clear();
+                    hostReadySince = 0L;
+                    hostWasReady = false;
+                }
             }
         });
+        XposedHelpers.findAndHookMethod(Activity.class, "onWindowFocusChanged",
+                boolean.class, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        Activity activity = (Activity) param.thisObject;
+                        if (!Boolean.TRUE.equals(param.args[0])) {
+                            if (activity == resumedActivity.get()) {
+                                hostReadySince = 0L;
+                                hostWasReady = false;
+                            }
+                            return;
+                        }
+                        if (activity != resumedActivity.get()
+                                || !activity.getClass().getName().startsWith(
+                                BridgeContract.HOST_PACKAGE + ".")) {
+                            return;
+                        }
+                        mainHandler.post(
+                                BridgeRuntime.this::showNextConfirmationWhenHostReady);
+                    }
+                });
     }
 
     private void hookHostOnCreate() {
@@ -372,8 +380,10 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
             wxApiReady = api != null && apiClass.isInstance(api);
             if (wxApiReady) {
                 recordDiagnostic("WeChat API ready on resumed host activity");
+                scheduleHostReadyCheck();
             } else {
                 recordDiagnostic("WeChat API remained unavailable");
+                if (activeTransferredState != null) scheduleHostReadyCheck();
             }
         } catch (Throwable error) {
             recordDiagnostic("WeChat API initialization on resume failed: "
@@ -700,7 +710,7 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
             activeTransferredState = null;
             confirmationGraceUntil = Math.max(confirmationGraceUntil,
                     System.currentTimeMillis() + 1_000L);
-            showNextConfirmation();
+            showNextConfirmationWhenHostReady();
             mainHandler.postDelayed(
                     () -> expire(state), BridgeContract.REQUEST_TTL_MS);
         });
@@ -712,7 +722,7 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
         mainHandler.post(() -> {
             confirmationGraceUntil = 0L;
             if (state.equals(activeTransferredState)) {
-                launchTransferredLoginWhenReady(state);
+                showNextConfirmationWhenHostReady();
             }
         });
     }
@@ -722,7 +732,7 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
         mainHandler.post(() -> {
             activeTransferredState = null;
             dismissConfirmation(state);
-            showNextConfirmation();
+            showNextConfirmationWhenHostReady();
         });
     }
 
@@ -824,6 +834,67 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
         }
     }
 
+    /**
+     * Wait for the foreground host window and WeChat SDK to remain usable
+     * before showing consent. A single lifecycle callback can still arrive
+     * while the launch screen is being replaced or the SDK is initializing.
+     */
+    private void showNextConfirmationWhenHostReady() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post(this::showNextConfirmationWhenHostReady);
+            return;
+        }
+        if (confirmationDialog != null) return;
+        AuthorizationSnapshot request = registry.nextPending(
+                System.currentTimeMillis());
+        if (request == null) return;
+        Activity activity = resumedActivity.get();
+        if (request.state.equals(activeTransferredState)
+                && (activity == null
+                || !activity.getClass().getName().startsWith(
+                BridgeContract.HOST_PACKAGE + "."))) {
+            activity = null;
+        }
+        if (!isHostReady(activity) || !wxApiReady) {
+            hostReadySince = 0L;
+            hostWasReady = false;
+            scheduleHostReadyCheck();
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (!hostWasReady) {
+            hostWasReady = true;
+            hostReadySince = now;
+            recordDiagnostic("host window and WeChat API ready; confirming stability");
+        }
+        long remaining = hostReadySince + HOST_READY_STABLE_MS - now;
+        if (remaining > 0L) {
+            mainHandler.postDelayed(
+                    this::showNextConfirmationWhenHostReady, remaining);
+            return;
+        }
+        recordDiagnostic("host window stable; showing login confirmation");
+        showNextConfirmation();
+    }
+
+    private static boolean isHostReady(Activity activity) {
+        if (activity == null || activity.isFinishing()
+                || activity.isDestroyed() || activity.getWindow() == null) {
+            return false;
+        }
+        View decor = activity.getWindow().getDecorView();
+        return decor != null
+                && decor.isAttachedToWindow()
+                && activity.hasWindowFocus()
+                && decor.getVisibility() == View.VISIBLE
+                && decor.getWidth() > 0
+                && decor.getHeight() > 0;
+    }
+
+    private boolean isHostSessionReady() {
+        return isHostReady(resumedActivity.get()) && wxApiReady;
+    }
+
     private void showNextConfirmation() {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             mainHandler.post(this::showNextConfirmation);
@@ -838,7 +909,8 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
         AuthorizationSnapshot request = registry.nextPending(System.currentTimeMillis());
         if (request == null) return;
         Activity activity = resumedActivity.get();
-        if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
+        if (!isHostReady(activity) || !wxApiReady) {
+            ensureWechatApiReady();
             launchHost();
             scheduleConfirmationRetry();
             return;
@@ -849,32 +921,26 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
         }
 
         confirmationState = request.state;
-        AlertDialog dialog = new AlertDialog.Builder(activity)
-                .setTitle("允许网页使用微信授权？")
-                .setMessage("请求来源：\n" + safeOrigin(registry.originForInternal(request.state))
-                        + "\n\n确认后将打开微信。授权结果只返回给这个来源，且只能读取一次。")
-                .setNegativeButton("拒绝", (ignored, which) ->
-                        reject(request.state, "user_denied", "你已拒绝这个网页的授权请求。"))
-                .setPositiveButton("允许并打开微信", (ignored, which) ->
-                        sendWechatAuthorization(request.state))
-                .setOnCancelListener(ignored ->
-                        reject(request.state, "user_denied", "你已取消这个网页的授权请求。"))
-                .create();
-        confirmationDialog = dialog;
-        dialog.setOnDismissListener(ignored -> {
-            if (confirmationDialog == dialog) {
-                confirmationDialog = null;
-                confirmationState = null;
-            }
-        });
+        final Dialog dialog;
         try {
-            dialog.show();
+            dialog = BridgeConfirmationUi.show(
+                    activity,
+                    safeOrigin(registry.originForInternal(request.state)),
+                    () -> sendWechatAuthorization(request.state),
+                    () -> reject(request.state, "user_denied",
+                            "你已取消这个网页的授权请求。"),
+                    () -> {
+                        if (confirmationDialog == null) {
+                            confirmationState = null;
+                        }
+                    });
+            confirmationDialog = dialog;
         } catch (Throwable error) {
-            confirmationDialog = null;
             confirmationState = null;
             registry.fail(request.state, "host_ui_unavailable",
                     "小天才当前页面无法显示确认框，请打开小天才后重试。",
                     System.currentTimeMillis());
+            return;
         }
     }
 
@@ -893,13 +959,14 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
 
     private void reject(String state, String code, String message) {
         if (state.equals(activeTransferredState)) activeTransferredState = null;
-        registry.fail(state, code, message, System.currentTimeMillis());
-        dismissConfirmation(state);
+        if (registry.fail(state, code, message, System.currentTimeMillis())) {
+            dismissConfirmation(state);
+        }
     }
 
     private void dismissConfirmation(String state) {
         if (confirmationState == null || !confirmationState.equals(state)) return;
-        AlertDialog dialog = confirmationDialog;
+        Dialog dialog = confirmationDialog;
         confirmationDialog = null;
         confirmationState = null;
         if (dialog != null && dialog.isShowing()) dialog.dismiss();
@@ -914,6 +981,16 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
     }
 
     private void sendWechatAuthorization(String state) {
+        Activity activity = resumedActivity.get();
+        ensureWechatApiReady();
+        if (!isHostReady(activity) || !wxApiReady) {
+            registry.fail(state, "host_not_ready",
+                    "小天才还没有准备好，请等页面完全加载后重新发起登录。",
+                    System.currentTimeMillis());
+            activeTransferredState = null;
+            dismissConfirmation(state);
+            return;
+        }
         if (!registry.mark(state, AuthorizationSnapshot.AWAITING_CONFIRMATION,
                 AuthorizationSnapshot.LAUNCHING_WECHAT,
                 System.currentTimeMillis())) {
