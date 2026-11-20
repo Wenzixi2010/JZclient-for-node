@@ -215,16 +215,10 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
                         Activity activity = (Activity) param.thisObject;
-                        if (activity.getClass().getName().startsWith(
-                                BridgeContract.HOST_PACKAGE + ".")) {
-                            Intent intent = param.args[0] instanceof Intent
-                                    ? (Intent) param.args[0] : activity.getIntent();
-                            if (intent != null && BridgeContract.HOST_AUTH_ACTION.equals(
-                                    intent.getAction())) {
-                                recordDiagnostic("host auth intent observed in onNewIntent");
-                                acceptHostLaunchIntent(activity, intent);
-                            }
-                        }
+                        if (!isHostActivity(activity)) return;
+                        Intent intent = param.args[0] instanceof Intent
+                                ? (Intent) param.args[0] : activity.getIntent();
+                        acceptHostAuthIntent(intent, "onNewIntent");
                     }
                 });
         XposedHelpers.findAndHookMethod(Activity.class, "onResume",
@@ -232,17 +226,31 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
                         Activity activity = (Activity) param.thisObject;
-                        if (activity.getClass().getName().startsWith(
-                                BridgeContract.HOST_PACKAGE + ".")) {
-                            Intent intent = activity.getIntent();
-                            if (intent != null && BridgeContract.HOST_AUTH_ACTION.equals(
-                                    intent.getAction())) {
-                                recordDiagnostic("host auth intent observed in onResume");
-                                acceptHostLaunchIntent(activity, intent);
-                            }
-                        }
+                        if (!isHostActivity(activity)) return;
+                        acceptHostAuthIntent(activity.getIntent(), "onResume");
                     }
                 });
+    }
+
+    /**
+     * Secneo replaces the launcher activity with its login page and rewrites
+     * the custom action while retaining the intent extras. The one-time state
+     * is therefore authoritative; the action is only a compatibility signal.
+     */
+    private void acceptHostAuthIntent(Intent intent, String lifecycle) {
+        if (intent == null) return;
+        String state = intent.getStringExtra(BridgeContract.EXTRA_DEEP_LINK_STATE);
+        if (!BridgeContract.isValidState(state)) return;
+        boolean actionPreserved = BridgeContract.HOST_AUTH_ACTION.equals(
+                intent.getAction());
+        recordDiagnostic("host auth state extra observed in " + lifecycle
+                + ", actionPreserved=" + actionPreserved);
+        acceptHostLaunchIntent(null, intent);
+    }
+
+    private static boolean isHostActivity(Activity activity) {
+        return activity != null
+                && BridgeContract.HOST_PACKAGE.equals(activity.getPackageName());
     }
 
     private void acceptHostLaunchIntent(Activity activity, Intent intent) {
@@ -459,8 +467,7 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
                             return;
                         }
                         if (activity != resumedActivity.get()
-                                || !activity.getClass().getName().startsWith(
-                                BridgeContract.HOST_PACKAGE + ".")) {
+                                || !isHostActivity(activity)) {
                             return;
                         }
                         mainHandler.post(
@@ -978,8 +985,7 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
         Activity activity = resumedActivity.get();
         if (request.state.equals(activeTransferredState)
                 && (activity == null
-                || !activity.getClass().getName().startsWith(
-                BridgeContract.HOST_PACKAGE + "."))) {
+                || !isHostActivity(activity))) {
             activity = null;
         }
         if (!isHostReady(activity)) {
