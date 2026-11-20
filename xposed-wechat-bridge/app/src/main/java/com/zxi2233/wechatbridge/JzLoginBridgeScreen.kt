@@ -76,7 +76,6 @@ import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
@@ -573,17 +572,4 @@ private fun copyText(context: Context, value: String?, label: String) {
     if (value.isNullOrBlank()) return
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
-}
-
-@Preview(showBackground = true, backgroundColor = 0xFF11131A, widthDp = 390, heightDp = 844)
-@Composable
-private fun ReadyPreview() {
-    MaterialTheme(colorScheme = BridgeColors, typography = BridgeTypography) {
-        Surface(color = MaterialTheme.colorScheme.background) {
-            Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                BridgeTopBar(connected = true) {}
-                StatusHero(BridgeStatus.READY, null) {}
-            }
-        }
-    }
 }
