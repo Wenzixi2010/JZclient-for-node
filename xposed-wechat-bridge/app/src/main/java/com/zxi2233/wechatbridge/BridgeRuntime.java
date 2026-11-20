@@ -979,6 +979,12 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
             return;
         }
         if (confirmationDialog != null) return;
+        if (confirmationState != null) {
+            // A page transition can replace the Activity that owns an
+            // AlertDialog without dismissing it cleanly. Never leave a
+            // stranded dialog attached to the old login launch page.
+            dismissConfirmation(confirmationState);
+        }
         AuthorizationSnapshot request = registry.nextPending(
                 System.currentTimeMillis());
         if (request == null) return;
@@ -988,7 +994,7 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
                 || !isHostActivity(activity))) {
             activity = null;
         }
-        if (!isHostReady(activity)) {
+        if (!isHostReady(activity) || !isLoginMethodActivity(activity)) {
             hostReadySince = 0L;
             hostWasReady = false;
             recordReadinessWait(activity);
@@ -1035,6 +1041,12 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
                 && decor.getHeight() > 0;
     }
 
+    private static boolean isLoginMethodActivity(Activity activity) {
+        return activity != null
+                && "com.xtc.choneclick.activity.ThirdLoginRecommendActivity"
+                        .equals(activity.getClass().getName());
+    }
+
     private boolean isHostSessionReady() {
         return isHostReady(resumedActivity.get());
     }
@@ -1053,7 +1065,7 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
         AuthorizationSnapshot request = registry.nextPending(System.currentTimeMillis());
         if (request == null) return;
         Activity activity = resumedActivity.get();
-        if (!isHostReady(activity)) {
+        if (!isHostReady(activity) || !isLoginMethodActivity(activity)) {
             launchHost();
             scheduleConfirmationRetry();
             return;
@@ -1066,8 +1078,7 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
         confirmationState = request.state;
         AlertDialog dialog = new AlertDialog.Builder(activity)
                 .setTitle("允许网页使用微信授权？")
-                .setMessage("请求来源：\n"
-                        + safeOrigin(registry.originForInternal(request.state))
+                .setMessage("连接地址：jzbridge"
                         + "\n\n确认后将打开小天才官方微信登录。")
                 .setNegativeButton("拒绝", (ignored, which) ->
                         reject(request.state, "user_denied",
