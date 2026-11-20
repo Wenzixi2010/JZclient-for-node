@@ -164,6 +164,11 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
             scheduleTransferredLoginRetry(state);
             return;
         }
+        Activity activity = resumedActivity.get();
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
+            scheduleTransferredLoginRetry(state);
+            return;
+        }
         AuthorizationSnapshot current = registry.nextPending(
                 System.currentTimeMillis());
         if (current == null || !state.equals(current.state)) return;
