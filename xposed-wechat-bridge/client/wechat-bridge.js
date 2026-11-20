@@ -77,6 +77,14 @@ function delay(milliseconds, signal) {
 const HANDOFF_QUERY = new URLSearchParams(globalThis.location?.search || '');
 const RESUME_ONLY = HANDOFF_QUERY.has('state');
 
+function returnTargets() {
+  return {
+    returnUrl: globalThis.location?.href || '',
+    returnUri: HANDOFF_QUERY.get('bridgeReturnUri')?.trim() || '',
+    returnPackage: HANDOFF_QUERY.get('bridgeReturnPackage')?.trim() || '',
+  };
+}
+
 /** Starts a real WeChat login through JzLoginBridge and com.xtc.watch. */
 export async function requestWechatAuthorization({
   baseUrl = DEFAULT_BASE_URL,
@@ -116,13 +124,16 @@ export async function requestWechatAuthorization({
     const initial = resumedState
       ? await request(baseUrl, `/v1/authorizations/${state}`, { signal: controller.signal })
       : await request(baseUrl, '/v1/authorizations', {
-          method: 'POST', body: JSON.stringify({ state }), signal: controller.signal,
+          method: 'POST',
+          body: JSON.stringify({ state, ...returnTargets() }),
+          signal: controller.signal,
         });
     created = !resumedState;
     notify(initial);
     if (!resumedState) {
+      const handoff = new URLSearchParams({ state, ...returnTargets() });
       globalThis.location?.assign(
-        `jzloginbridge://authorize?state=${encodeURIComponent(state)}`);
+        `jzloginbridge://authorize?${handoff}`);
     }
 
     while (true) {
