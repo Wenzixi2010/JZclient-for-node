@@ -36,21 +36,14 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Error
 import androidx.compose.material.icons.rounded.Fingerprint
-import androidx.compose.material.icons.rounded.Key
-import androidx.compose.material.icons.rounded.OpenInBrowser
-import androidx.compose.material.icons.rounded.OpenInNew
-import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Shield
-import androidx.compose.material.icons.rounded.Smartphone
 import androidx.compose.material.icons.rounded.Watch
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -74,7 +67,6 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
@@ -172,17 +164,13 @@ private val BridgeTypography = Typography(
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 fun JzLoginBridgeApp(
-    onOpenHost: () -> Unit,
-    onReturnToCaller: () -> Unit,
     onClearSavedIntent: () -> Unit,
 ) {
     val context = LocalContext.current
     val view = LocalView.current
     val result = JzLoginBridgeState.result
     var detailsOpen by rememberSaveable { mutableStateOf(false) }
-    val hostHandoff = JzLoginBridgeState.hostHandoff
     val hostUnavailable = JzLoginBridgeState.hostUnavailable
-    val returnUnavailable = JzLoginBridgeState.returnUnavailable
     val status = when {
         result?.hasSession == true -> BridgeStatus.SUCCESS
         result?.isTerminal == true -> BridgeStatus.ERROR
@@ -258,17 +246,11 @@ fun JzLoginBridgeApp(
                                 StatusHero(
                                     status = current,
                                     result = result,
-                                    hostHandoff = hostHandoff,
-                                    returnUnavailable = returnUnavailable,
-                                    onOpenHost = onOpenHost,
-                                    onReturnToCaller = onReturnToCaller,
                                     onDetails = { detailsOpen = true },
                                 )
                             }
                         }
                         if (hostUnavailable) item { InlineNotice() }
-                        item { StepsCard() }
-                        item { SecurityCard() }
                     }
                 }
             }
@@ -291,7 +273,7 @@ fun JzLoginBridgeApp(
                     ) {}
                 },
             ) {
-                DetailsSheet(result, hostHandoff, hostUnavailable)
+                DetailsSheet(result, hostUnavailable)
             }
         }
     }
@@ -345,13 +327,13 @@ private fun BridgeTopBar(connected: Boolean, onInfo: () -> Unit) {
                 },
                 modifier = Modifier.semantics {
                     contentDescription =
-                        "连接状态：${if (connected) "已连接" else "未连接"}，点击打开小天才"
+                        "连接状态：${if (connected) "已连接" else "未连接"}，点击查看登录信息"
                 },
             )
             IconButton(onClick = onInfo) {
                 Icon(
-                    Icons.Rounded.Security,
-                    contentDescription = "安全与请求详情",
+                    Icons.Rounded.Shield,
+                    contentDescription = "Login 信息",
                     tint = MaterialTheme.colorScheme.primary,
                 )
             }
@@ -387,10 +369,6 @@ private fun BrandMark() {
 private fun StatusHero(
     status: BridgeStatus,
     result: BridgeResultUi?,
-    hostHandoff: Boolean,
-    returnUnavailable: Boolean,
-    onOpenHost: () -> Unit,
-    onReturnToCaller: () -> Unit,
     onDetails: () -> Unit,
 ) {
     val success = status == BridgeStatus.SUCCESS
@@ -403,17 +381,13 @@ private fun StatusHero(
     val title = when (status) {
         BridgeStatus.SUCCESS -> "授权已完成"
         BridgeStatus.ERROR -> "这次授权未完成"
-        BridgeStatus.READY -> if (hostHandoff) "已转交小天才" else "准备打开小天才"
+        BridgeStatus.READY -> "请从网站发起登录"
     }
     val body = when (status) {
-        BridgeStatus.SUCCESS -> "官方微信登录成功。网页现在可以继续完成 JZ 家长账号登录。"
+        BridgeStatus.SUCCESS -> "请返回网页继续操作！"
         BridgeStatus.ERROR -> result?.wechatError?.takeIf { it.isNotBlank() }
-            ?: "微信或小天才中止了本次登录。回到网页后可以重新发起。"
-        BridgeStatus.READY -> if (hostHandoff) {
-            "请回到小天才确认网页来源并完成微信授权。授权结束后，浏览器会接着读取结果。"
-        } else {
-            "网页发起了微信登录请求。打开小天才后，确认请求来源并继续官方微信授权。"
-        }
+            ?: "请返回网页重新发起登录。"
+        BridgeStatus.READY -> "打开 JZ 网页，在账号页面点击“使用微信登录”。"
     }
     val accent = when {
         success -> MaterialTheme.colorScheme.secondary
@@ -457,7 +431,7 @@ private fun StatusHero(
                 Column {
                     Text(title, style = MaterialTheme.typography.headlineMedium)
                     Text(
-                        if (result?.hasSession == true) "宿主会话已安全回传" else "官方链路 · 本地回环",
+                        if (result?.hasSession == true) "Login 状态：已完成" else "Login 状态：等待网页发起",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -468,36 +442,7 @@ private fun StatusHero(
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (status == BridgeStatus.READY) {
-                Button(
-                    onClick = onOpenHost,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(18.dp),
-                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 15.dp),
-                ) {
-                    Icon(Icons.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(9.dp))
-                    Text(if (hostHandoff) "再次打开小天才" else "打开小天才并登录")
-                }
-            } else {
-                if (success && JzLoginBridgeState.hasReturnTarget()) {
-                    FilledTonalButton(
-                        onClick = onReturnToCaller,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(18.dp),
-                    ) {
-                        Icon(Icons.Rounded.OpenInBrowser, contentDescription = null, modifier = Modifier.size(19.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            if (returnUnavailable) {
-                                "再次返回调用方"
-                            } else {
-                                "返回调用方"
-                            },
-                        )
-                    }
-                    Spacer(Modifier.height(10.dp))
-                }
+            if (status != BridgeStatus.READY) {
                 FilledTonalButton(
                     onClick = onDetails,
                     modifier = Modifier.fillMaxWidth(),
@@ -505,96 +450,8 @@ private fun StatusHero(
                 ) {
                     Icon(Icons.Rounded.Shield, contentDescription = null, modifier = Modifier.size(19.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("查看授权详情")
+                    Text("查看 Login 信息")
                 }
-            }
-        }
-    }
-}
-
-@Composable
-private fun StepsCard() {
-    val steps = listOf(
-        Step(Icons.Rounded.Smartphone, "网页发起请求", "只生成一次性随机状态，不携带账号信息。"),
-        Step(Icons.Rounded.Watch, "小天才完成授权", "在宿主内确认来源，并打开官方微信登录。"),
-        Step(Icons.Rounded.Security, "会话安全回传", "微信授权码留在小天才，浏览器只取得账号会话。"),
-    )
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .72f)),
-    ) {
-        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(17.dp)) {
-            Text("登录是这样完成的", style = MaterialTheme.typography.titleLarge)
-            steps.forEachIndexed { index, step ->
-                Row(verticalAlignment = Alignment.Top) {
-                    StepIndex(index + 1, step.icon)
-                    Spacer(Modifier.width(13.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(step.title, style = MaterialTheme.typography.titleMedium)
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            step.description,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-                if (index < steps.lastIndex) {
-                    HorizontalDivider(
-                        modifier = Modifier.padding(start = 48.dp),
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                    )
-                }
-            }
-        }
-    }
-}
-
-private data class Step(val icon: ImageVector, val title: String, val description: String)
-
-@Composable
-private fun StepIndex(index: Int, icon: ImageVector) {
-    Box(
-        modifier = Modifier
-            .size(36.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.primaryContainer),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            icon,
-            contentDescription = "第 $index 步",
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(19.dp),
-        )
-    }
-}
-
-@Composable
-private fun SecurityCard() {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(22.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f),
-    ) {
-        Row(modifier = Modifier.padding(18.dp), verticalAlignment = Alignment.Top) {
-            Icon(
-                Icons.Rounded.Key,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.tertiary,
-                modifier = Modifier.size(22.dp),
-            )
-            Spacer(Modifier.width(12.dp))
-            Column {
-                Text("凭证不落盘", style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    "页面截图和录屏受到系统保护。关闭页面、重新授权或点击清空后，当前内存中的结果会移除。",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         }
     }
@@ -622,7 +479,6 @@ private fun InlineNotice() {
 @Composable
 private fun DetailsSheet(
     result: BridgeResultUi?,
-    hostHandoff: Boolean,
     hostUnavailable: Boolean,
 ) {
     Column(
@@ -634,17 +490,16 @@ private fun DetailsSheet(
                 bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 24.dp,
             ),
     ) {
-        Text("授权详情", style = MaterialTheme.typography.headlineMedium)
+        Text("Login 信息", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(5.dp))
         Text(
-            "这里只显示链路状态。账号会话和微信授权码不会在页面内容中出现。",
+            "本次登录的来源和结果。",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(20.dp))
-        DetailLine("桥接状态", if (hostUnavailable) "小天才不可用" else "本地服务已连接")
-        DetailLine("登录链路", if (hostHandoff) "已转交小天才" else "等待打开小天才")
-        DetailLine("请求来源", result?.origin?.takeIf { it.isNotBlank() } ?: "—")
+        DetailLine("运行状态", if (hostUnavailable) "小天才不可用" else if (result?.hasSession == true) "登录已完成" else "等待登录结果")
+        DetailLine("来源", result?.origin?.takeIf { it.isNotBlank() } ?: "—")
         DetailLine(
             "微信错误",
             if ((result?.wechatErrorCode ?: 0) == 0) {
@@ -659,8 +514,7 @@ private fun DetailsSheet(
                 DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.MEDIUM).format(Date(it))
             } ?: "—",
         )
-        DetailLine("小天才版本", result?.hostVersion?.takeIf { it.isNotBlank() } ?: "—")
-        DetailLine("宿主会话", if (result?.hasSession == true) "已取得并交给网页" else "尚未取得")
+        DetailLine("版本", result?.hostVersion?.takeIf { it.isNotBlank() } ?: "—")
     }
 }
 
@@ -727,9 +581,8 @@ private fun ReadyPreview() {
     MaterialTheme(colorScheme = BridgeColors, typography = BridgeTypography) {
         Surface(color = MaterialTheme.colorScheme.background) {
             Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        BridgeTopBar(connected = true) {}
-                StatusHero(BridgeStatus.READY, null, false, false, {}, {}, {})
-                StepsCard()
+                BridgeTopBar(connected = true) {}
+                StatusHero(BridgeStatus.READY, null) {}
             }
         }
     }

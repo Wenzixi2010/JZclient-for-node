@@ -31,26 +31,7 @@ type PendingAuthorization = {
   status: WechatAuthorizationStatus;
   expiresAt: number;
   handoffStarted?: boolean;
-  returnUrl?: string;
 };
-
-function readReturnParam(name: string) {
-  const search = new URLSearchParams(window.location.search);
-  const fromSearch = search.get(name)?.trim();
-  if (fromSearch) return fromSearch;
-  const hash = window.location.hash.startsWith('#')
-    ? window.location.hash.slice(1) : window.location.hash;
-  const queryStart = hash.indexOf('?');
-  if (queryStart < 0) return '';
-  return new URLSearchParams(hash.slice(queryStart + 1)).get(name)?.trim() || '';
-}
-
-export function getNativeReturnTargets() {
-  return {
-    returnUri: readReturnParam('bridgeReturnUri'),
-    returnPackage: readReturnParam('bridgeReturnPackage'),
-  };
-}
 
 function readPendingAuthorization(): PendingAuthorization | null {
   try {
@@ -109,31 +90,24 @@ function delay(milliseconds: number, signal: AbortSignal) {
   });
 }
 
-function waitForPageReturn(timeoutMs = 3_000) {
-  return new Promise<void>(resolve => {
-    if (document.visibilityState !== 'visible') {
-      resolve();
-      return;
+async function retryBridgeRequest<T>(
+  request: () => Promise<T>,
+  signal: AbortSignal,
+  attempts = 12,
+) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return await request();
+    } catch (error) {
+      lastError = error;
+      const retryable = error instanceof WechatBridgeError
+        && ['bridge_unavailable', 'invalid_bridge_response'].includes(error.code);
+      if (!retryable || attempt === attempts - 1) throw error;
+      await delay(250, signal);
     }
-    let timer = 0;
-    const finish = () => {
-      window.removeEventListener('pagehide', onLeave);
-      document.removeEventListener('visibilitychange', onVisibility);
-      window.clearTimeout(timer);
-      resolve();
-    };
-    const onLeave = () => {
-      window.clearTimeout(timer);
-      timer = window.setTimeout(finish, 60_000);
-    };
-    const onVisibility = () => {
-      if (document.visibilityState === 'hidden') onLeave();
-      else finish();
-    };
-    window.addEventListener('pagehide', onLeave);
-    document.addEventListener('visibilitychange', onVisibility);
-    timer = window.setTimeout(finish, timeoutMs);
-  });
+  }
+  throw lastError;
 }
 
 export function getPendingWechatAuthorization() {
@@ -184,28 +158,29 @@ export async function requestWechatAuthorization({
   };
 
   if (!resumeOnly) {
-    // The bridge activity must be launched before probing the loopback API:
-    // that API is injected into the XTC process and does not exist while the
-    // host is closed. Reuse the stored state so a failed handoff can retry
-    // without accumulating abandoned requests.
     state = pending?.state || randomState();
     savePendingAuthorization({
       state,
       status: 'waiting_for_host',
       expiresAt: Date.now() + PENDING_AUTHORIZATION_TTL_MS,
       handoffStarted: true,
-      returnUrl: window.location.href,
     });
     onStatus?.('waiting_for_host');
     onBridgeReady?.(state);
-    await waitForPageReturn();
+    // The web page owns the result. Background timer throttling is fine here
+    // because the loop resumes as soon as the page receives focus again.
     onStatus?.('waiting_for_host');
   }
   try {
     document.addEventListener('visibilitychange', visibilityChanged);
+    window.addEventListener('focus', visibilityChanged);
+    window.addEventListener('pageshow', visibilityChanged);
     startDeadline();
-    await getWechatBridgeStatus(controller.signal);
+    await retryBridgeRequest(() => getWechatBridgeStatus(controller.signal), controller.signal);
     let snapshot: any;
+    if (resumeOnly && pending) {
+      state = pending.state;
+    }
     if (!state && resumeOnly) {
       throw new WechatBridgeError(
         'authorization_not_pending',
@@ -235,12 +210,9 @@ export async function requestWechatAuthorization({
     }
     if (!snapshot) {
       if (!state) state = randomState();
-      const targets = getNativeReturnTargets();
-      snapshot = await bridgeRequest('/v1/authorizations', {
-        method: 'POST',
-        body: JSON.stringify({ state, returnUrl: window.location.href, ...targets }),
-        signal: controller.signal,
-      });
+      snapshot = await retryBridgeRequest(() => bridgeRequest('/v1/authorizations', {
+        method: 'POST', body: JSON.stringify({ state }), signal: controller.signal,
+      }), controller.signal);
       created = true;
     }
     savePendingAuthorization({
@@ -248,10 +220,10 @@ export async function requestWechatAuthorization({
       status: snapshot.status,
       expiresAt: Number(snapshot.expiresAt) || Date.now() + PENDING_AUTHORIZATION_TTL_MS,
       handoffStarted: true,
-      returnUrl: pending?.returnUrl || window.location.href,
     });
     onStatus?.(snapshot.status);
     while (true) {
+      if (signal?.aborted) throw new WechatBridgeError('aborted', '已取消微信授权。');
       if (snapshot.status === 'error') {
         terminal = true;
         savePendingAuthorization(null);
@@ -263,6 +235,18 @@ export async function requestWechatAuthorization({
         if (!snapshot.session) throw new WechatBridgeError('missing_session', '小天才登录成功，但没有返回账号会话。');
         return { session: String(snapshot.session), state };
       }
+      // Some Android browsers suspend background timers until the page is
+      // visible again. Read once immediately after focus, before waiting.
+      if (document.visibilityState === 'visible') {
+        try {
+          snapshot = await bridgeRequest(`/v1/authorizations/${state}`, { signal: controller.signal });
+          if (snapshot.state !== state) throw new WechatBridgeError('state_mismatch', '微信授权返回的校验状态不一致，请重试。');
+          onStatus?.(snapshot.status);
+          continue;
+        } catch (error) {
+          if (!(error instanceof WechatBridgeError) || error.status !== 404) throw error;
+        }
+      }
       await delay(800, controller.signal);
       snapshot = await bridgeRequest(`/v1/authorizations/${state}`, { signal: controller.signal });
       if (snapshot.state !== state) throw new WechatBridgeError('state_mismatch', '微信授权返回的校验状态不一致，请重试。');
@@ -272,7 +256,6 @@ export async function requestWechatAuthorization({
         status: snapshot.status,
         expiresAt: Date.now() + PENDING_AUTHORIZATION_TTL_MS,
         handoffStarted: true,
-        returnUrl: pending?.returnUrl || window.location.href,
       });
     }
   } catch (error) {
@@ -282,6 +265,8 @@ export async function requestWechatAuthorization({
   } finally {
     pauseDeadline();
     document.removeEventListener('visibilitychange', visibilityChanged);
+    window.removeEventListener('focus', visibilityChanged);
+    window.removeEventListener('pageshow', visibilityChanged);
     signal?.removeEventListener('abort', abort);
     if (created && !terminal) {
       savePendingAuthorization(null);

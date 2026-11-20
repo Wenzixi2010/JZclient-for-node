@@ -8,14 +8,10 @@ object ComposeBridgeUi {
     @JvmStatic
     fun attach(
         activity: ComponentActivity,
-        onOpenHost: Runnable,
-        onReturnToCaller: Runnable,
         onClearSavedIntent: Runnable,
     ) {
         activity.setContent {
             JzLoginBridgeApp(
-                onOpenHost = onOpenHost::run,
-                onReturnToCaller = onReturnToCaller::run,
                 onClearSavedIntent = onClearSavedIntent::run,
             )
         }

@@ -5,59 +5,24 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 
-/** Volatile UI state. No session, state token or result is persisted here. */
+/** Volatile UI state used by the Compose status screen. */
 object JzLoginBridgeState {
     @Volatile
     private var requestState: String = ""
-    @Volatile
-    private var requestReturnUrl: String = ""
-    @Volatile
-    private var requestReturnUri: String = ""
-    @Volatile
-    private var requestReturnPackage: String = ""
-    var hostHandoff by mutableStateOf(false)
-        private set
     var hostUnavailable by mutableStateOf(false)
-        private set
-    var returnRequested by mutableStateOf(false)
-        private set
-    var returnUnavailable by mutableStateOf(false)
         private set
     var result by mutableStateOf<BridgeResultUi?>(null)
         private set
 
-    fun markRequest(
-        state: String,
-        returnUrl: String = "",
-        returnUri: String = "",
-        returnPackage: String = "",
-    ) {
+    fun markRequest(state: String) {
         requestState = state
-        requestReturnUrl = returnUrl
-        requestReturnUri = returnUri
-        requestReturnPackage = returnPackage
         result = null
-        hostHandoff = false
         hostUnavailable = false
-        returnRequested = false
-        returnUnavailable = false
     }
 
     fun pendingRequest(): String = requestState
 
-    fun pendingReturnUrl(): String = requestReturnUrl
-
-    fun pendingReturnUri(): String = requestReturnUri
-
-    fun pendingReturnPackage(): String = requestReturnPackage
-
-    fun hasReturnTarget(): Boolean =
-        requestReturnUrl.isNotBlank() ||
-            requestReturnUri.isNotBlank() ||
-            requestReturnPackage.isNotBlank()
-
     fun markHostOpening() {
-        hostHandoff = true
         hostUnavailable = false
     }
 
@@ -65,24 +30,9 @@ object JzLoginBridgeState {
         hostUnavailable = true
     }
 
-    fun returnRequested() {
-        returnRequested = true
-        returnUnavailable = false
-    }
-
-    fun reportReturnUnavailable() {
-        returnUnavailable = true
-    }
-
     fun clear() {
         requestState = ""
-        requestReturnUrl = ""
-        requestReturnUri = ""
-        requestReturnPackage = ""
-        hostHandoff = false
         hostUnavailable = false
-        returnRequested = false
-        returnUnavailable = false
         result = null
     }
 

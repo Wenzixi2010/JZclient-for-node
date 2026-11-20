@@ -135,17 +135,11 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
             recordDiagnostic("host launch intent contained an invalid state");
             intent.removeExtra(BridgeContract.EXTRA_DEEP_LINK_STATE);
             intent.removeExtra(BridgeContract.EXTRA_DEEP_LINK_ORIGIN);
-            intent.removeExtra(BridgeContract.EXTRA_DEEP_LINK_RETURN_URL);
-            intent.removeExtra(BridgeContract.EXTRA_DEEP_LINK_RETURN_URI);
-            intent.removeExtra(BridgeContract.EXTRA_DEEP_LINK_RETURN_PACKAGE);
             return;
         }
         try {
             AuthorizationSnapshot snapshot = registry.acceptTransfer(
                     state,
-                    intent.getStringExtra(BridgeContract.EXTRA_DEEP_LINK_RETURN_URL),
-                    intent.getStringExtra(BridgeContract.EXTRA_DEEP_LINK_RETURN_URI),
-                    intent.getStringExtra(BridgeContract.EXTRA_DEEP_LINK_RETURN_PACKAGE),
                     System.currentTimeMillis());
             recordDiagnostic("host launch intent accepted, status="
                     + snapshot.status);
@@ -161,9 +155,6 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
             // launcher intent after the in-memory request is established.
             intent.removeExtra(BridgeContract.EXTRA_DEEP_LINK_STATE);
             intent.removeExtra(BridgeContract.EXTRA_DEEP_LINK_ORIGIN);
-            intent.removeExtra(BridgeContract.EXTRA_DEEP_LINK_RETURN_URL);
-            intent.removeExtra(BridgeContract.EXTRA_DEEP_LINK_RETURN_URI);
-            intent.removeExtra(BridgeContract.EXTRA_DEEP_LINK_RETURN_PACKAGE);
             intent.setData(null);
         }
     }
@@ -546,15 +537,14 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
             if (sessionJson == null || sessionJson.isEmpty()) {
                 throw new IllegalStateException("host session is unavailable");
             }
-            RequestRegistry.InternalCompletion completion =
+            AuthorizationSnapshot completion =
                     registry.completeWithAccountForInternal(
                             wireState, sessionJson, 0, null,
                             System.currentTimeMillis());
             if (completion != null) {
                 recordDiagnostic("host account login completed");
                 showCredentialPreview(
-                        completion.snapshot, completion.origin,
-                        completion.returnTarget);
+                        completion, registry.originForInternal(completion.state));
             }
         } catch (Throwable error) {
             recordDiagnostic("reading host account failed: "
@@ -744,8 +734,7 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
         }
     }
 
-    private void showCredentialPreview(AuthorizationSnapshot snapshot, String origin,
-                                       RequestRegistry.ReturnTarget returnTarget) {
+    private void showCredentialPreview(AuthorizationSnapshot snapshot, String origin) {
         if (snapshot == null || !snapshot.isTerminal()) return;
         Context context = AndroidAppHelper.currentApplication();
         if (context == null) return;
@@ -767,18 +756,6 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
             preview.putExtra(MainActivity.EXTRA_WECHAT_ERROR, snapshot.wechatError);
             preview.putExtra(MainActivity.EXTRA_CAPTURED_AT, System.currentTimeMillis());
             preview.putExtra(MainActivity.EXTRA_HOST_VERSION, hostVersion());
-            if (returnTarget != null) {
-                if (returnTarget.url != null) {
-                    preview.putExtra(MainActivity.EXTRA_RETURN_URL, returnTarget.url);
-                }
-                if (returnTarget.uri != null) {
-                    preview.putExtra(MainActivity.EXTRA_RETURN_URI, returnTarget.uri);
-                }
-                if (returnTarget.packageName != null) {
-                    preview.putExtra(
-                            MainActivity.EXTRA_RETURN_PACKAGE, returnTarget.packageName);
-                }
-            }
             preview.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
             Activity activity = resumedActivity.get();
             Context launcher = activity != null && !activity.isFinishing()
@@ -786,47 +763,8 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
             launcher.startActivity(preview);
             lastPreviewState = previewKey;
         } catch (Throwable error) {
-            boolean returned = launchReturnTarget(context, returnTarget);
-            recordDiagnostic("preview could not be opened: "
-                    + error.getClass().getSimpleName()
-                    + ", direct return=" + returned);
-        }
-    }
-
-    private boolean launchReturnTarget(Context context,
-                                       RequestRegistry.ReturnTarget target) {
-        if (context == null || target == null) return false;
-        if (target.uri != null) {
-            if (startExternalIntent(context, new Intent(
-                    Intent.ACTION_VIEW, android.net.Uri.parse(target.uri)))) {
-                return true;
-            }
-        }
-        if (target.packageName != null) {
-            Intent packageIntent = context.getPackageManager()
-                    .getLaunchIntentForPackage(target.packageName);
-            if (packageIntent != null
-                    && startExternalIntent(context, packageIntent)) {
-                return true;
-            }
-        }
-        if (target.url != null) {
-            Intent browser = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(target.url));
-            browser.addCategory(Intent.CATEGORY_BROWSABLE);
-            return startExternalIntent(context, browser);
-        }
-        return false;
-    }
-
-    private boolean startExternalIntent(Context context, Intent intent) {
-        try {
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            context.startActivity(intent);
-            return true;
-        } catch (Throwable error) {
-            recordDiagnostic("direct return target failed: "
+            recordDiagnostic("result screen could not be opened: "
                     + error.getClass().getSimpleName());
-            return false;
         }
     }
 

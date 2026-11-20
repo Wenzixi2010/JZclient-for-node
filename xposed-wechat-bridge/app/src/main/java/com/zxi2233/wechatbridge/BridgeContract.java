@@ -13,12 +13,6 @@ public final class BridgeContract {
     public static final String STATE_PREFIX = "jzwb1.";
     public static final String EXTRA_DEEP_LINK_STATE = "jz_login_bridge_state";
     public static final String EXTRA_DEEP_LINK_ORIGIN = "jz_login_bridge_origin";
-    public static final String EXTRA_DEEP_LINK_RETURN_URL =
-            "jz_login_bridge_return_url";
-    public static final String EXTRA_DEEP_LINK_RETURN_URI =
-            "jz_login_bridge_return_uri";
-    public static final String EXTRA_DEEP_LINK_RETURN_PACKAGE =
-            "jz_login_bridge_return_package";
     public static final String HOST_AUTH_ACTION =
             HOST_PACKAGE + ".account.WECHAT_LOGIN";
 
@@ -46,78 +40,6 @@ public final class BridgeContract {
         if (host.isEmpty() || host.length() > 255) return null;
         if (host.contains("/") || host.contains("@")) return null;
         return host;
-    }
-
-    /**
-     * The browser's return URL is only a navigation hint, but still restrict it
-     * to a real HTTP(S) page and the origin that owns this login request.
-     */
-    public static String validateReturnUrl(String value, String origin) {
-        if (value == null || value.isEmpty() || value.length() > 2048
-                || origin == null || origin.isEmpty()) return "";
-        try {
-            String normalizedOrigin = normalizeOrigin(origin);
-            URI uri = URI.create(value);
-            String scheme = uri.getScheme();
-            if (scheme == null || uri.getHost() == null
-                    || (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme))) {
-                return "";
-            }
-            int port = uri.getPort();
-            if (port < 0) port = "https".equalsIgnoreCase(scheme) ? 443 : 80;
-            String pageOrigin = scheme.toLowerCase(Locale.ROOT) + "://"
-                    + uri.getHost().toLowerCase(Locale.ROOT)
-                    + (((scheme.equalsIgnoreCase("http") && port == 80)
-                    || (scheme.equalsIgnoreCase("https") && port == 443))
-                    ? "" : ":" + port);
-            return normalizedOrigin.equals(pageOrigin) ? value : "";
-        } catch (IllegalArgumentException | BridgeException error) {
-            return "";
-        }
-    }
-
-    /**
-     * Native callers can provide their own non-network return URI. Dangerous
-     * or browser-owned schemes stay blocked so a webpage cannot use the bridge
-     * as a generic external-intent launcher.
-     */
-    public static String validateReturnUri(String value) {
-        if (value == null || value.isEmpty() || value.length() > 2048) return "";
-        try {
-            URI uri = URI.create(value);
-            String scheme = uri.getScheme();
-            if (scheme == null || !scheme.matches("[A-Za-z][A-Za-z0-9+.-]{1,31}")
-                    || uri.getRawUserInfo() != null) {
-                return "";
-            }
-            switch (scheme.toLowerCase(Locale.ROOT)) {
-                case "http":
-                case "https":
-                case "javascript":
-                case "file":
-                case "content":
-                case "data":
-                case "blob":
-                case "intent":
-                case "android-app":
-                case "market":
-                case "jzloginbridge":
-                    return "";
-                default:
-                    return value;
-            }
-        } catch (IllegalArgumentException error) {
-            return "";
-        }
-    }
-
-    /** Only syntactically valid Android package names can be used as targets. */
-    public static String validateReturnPackage(String value) {
-        if (value == null || value.length() > 200
-                || !value.matches("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")) {
-            return "";
-        }
-        return MODULE_PACKAGE.equals(value) ? "" : value;
     }
 
     public static boolean sameWechatResponse(String expected, String received) {

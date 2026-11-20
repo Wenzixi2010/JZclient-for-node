@@ -48,7 +48,7 @@ const { session, state } = await requestWechatAuthorization({
 jzloginbridge://authorize?state=<一次性状态>&returnUrl=<原网页地址>
 ```
 
-`JzLoginBridge` 校验状态格式后打开小天才。`returnUrl` 仅允许 `http/https`，并且必须与发起请求的网页同源。原生应用也可以在当前网页地址里附加 `bridgeReturnUri=<应用深链>` 或 `bridgeReturnPackage=<包名>`，成功后优先回到该应用；不允许危险 Scheme、`intent://` 或任意第三方包跳转。深链不携带账号、会话、设备标识或微信授权码。
+`JzLoginBridge` 校验状态格式后打开小天才。深链不携带账号、会话、设备标识或微信授权码。
 
 完整流程：
 
@@ -58,9 +58,9 @@ jzloginbridge://authorize?state=<一次性状态>&returnUrl=<原网页地址>
 4. 用户在微信中授权。
 5. 桥接把微信 `code` 交给小天才宿主官方 `MobileService.wc()`。
 6. 宿主完成 SSO 换票、下载账号和手表后，桥接读取 `MobileAccount`。
-7. 成功结果会先带回 JzLoginBridge，再一次性返回同源网页或调用方应用；网页恢复后轮询取得账号会话，并校验 `state`。
+7. 成功后 JzLoginBridge 显示“请返回网页继续操作”，网页轮询取得账号会话并校验 `state`。
 
-若系统拒绝自动返回，桥接成功页会保留“再次返回调用方”按钮，待处理状态不会被这里的跳转消费。
+模块不会自动切回浏览器。用户返回原网页后，网页会读取待处理结果。
 
 如果浏览器没有直接打开 `JzLoginBridge`，可手动从桌面启动；页面仍会保留待处理的授权状态并从 `waiting_for_host` 继续。手机会在返回浏览器时恢复轮询，不要求浏览器在宿主前台保持运行。
 
