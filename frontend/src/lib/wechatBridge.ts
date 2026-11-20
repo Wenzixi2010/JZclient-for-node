@@ -34,11 +34,21 @@ type PendingAuthorization = {
   returnUrl?: string;
 };
 
-function nativeReturnTargets() {
-  const source = new URLSearchParams(window.location.search);
+function readReturnParam(name: string) {
+  const search = new URLSearchParams(window.location.search);
+  const fromSearch = search.get(name)?.trim();
+  if (fromSearch) return fromSearch;
+  const hash = window.location.hash.startsWith('#')
+    ? window.location.hash.slice(1) : window.location.hash;
+  const queryStart = hash.indexOf('?');
+  if (queryStart < 0) return '';
+  return new URLSearchParams(hash.slice(queryStart + 1)).get(name)?.trim() || '';
+}
+
+export function getNativeReturnTargets() {
   return {
-    returnUri: source.get('bridgeReturnUri')?.trim() || '',
-    returnPackage: source.get('bridgeReturnPackage')?.trim() || '',
+    returnUri: readReturnParam('bridgeReturnUri'),
+    returnPackage: readReturnParam('bridgeReturnPackage'),
   };
 }
 
@@ -225,7 +235,7 @@ export async function requestWechatAuthorization({
     }
     if (!snapshot) {
       if (!state) state = randomState();
-      const targets = nativeReturnTargets();
+      const targets = getNativeReturnTargets();
       snapshot = await bridgeRequest('/v1/authorizations', {
         method: 'POST',
         body: JSON.stringify({ state, returnUrl: window.location.href, ...targets }),

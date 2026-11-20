@@ -5,7 +5,7 @@ import { api, post } from '../lib/api';
 import { useResource } from '../lib/hooks';
 import { Badge, Button, Card, ErrorState, Field, Input, LoadingState, Modal, PageHeader, Select, toast } from '../components/ui';
 import { formatTime } from './HomePageParts';
-import { getPendingWechatAuthorization, requestWechatAuthorization, type WechatAuthorizationStatus } from '../lib/wechatBridge';
+import { getNativeReturnTargets, getPendingWechatAuthorization, requestWechatAuthorization, type WechatAuthorizationStatus } from '../lib/wechatBridge';
 import './account-md3.css';
 
 const VERIFY_MODES: Record<string, string> = { 1: '旧设备验证', 2: '家庭成员验证', 3: '短信验证码', 4: '密保问题', 6: '其它方式' };
@@ -237,9 +237,7 @@ export default function AccountPage() {
 
 function openLoginBridge(state: string) {
   const params = new URLSearchParams({ state, returnUrl: window.location.href });
-  const source = new URLSearchParams(window.location.search);
-  const returnUri = source.get('bridgeReturnUri')?.trim();
-  const returnPackage = source.get('bridgeReturnPackage')?.trim();
+  const { returnUri, returnPackage } = getNativeReturnTargets();
   if (returnUri) params.set('returnUri', returnUri);
   if (returnPackage) params.set('returnPackage', returnPackage);
   const url = `jzloginbridge://authorize?${params.toString()}`;
