@@ -35,6 +35,8 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
     private static final long WECHAT_READY_TIMEOUT_MS = 8_000L;
     private static final long WECHAT_PROBE_INTERVAL_MS = 500L;
     private static final long READINESS_LOG_INTERVAL_MS = 2_000L;
+    private static final long HOST_HOOK_PROBE_INTERVAL_MS = 400L;
+    private static final long HOST_HOOK_PROBE_TIMEOUT_MS = 30_000L;
 
     private final ClassLoader hostClassLoader;
     private final RequestRegistry registry = new RequestRegistry();
@@ -63,10 +65,20 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
     private String pendingWechatStartState;
     private long pendingWechatStartDeadline;
     private boolean pendingWechatStartScheduled;
+    private boolean wechatCallbackHookInstalled;
+    private boolean sessionStoreHookInstalled;
+    private boolean wechatApiHookInstalled;
+    private boolean hostHooksProbeScheduled;
+    private long hostHooksProbeStartedAt;
+    private int hostHooksProbeAttempts;
 
     private void recordDiagnostic(String message) {
         String line = System.currentTimeMillis() + " " + message;
-        XposedBridge.log(TAG + line);
+        try {
+            XposedBridge.log(TAG + line);
+        } catch (Throwable ignored) {
+            Log.i("JzLoginBridge", line);
+        }
         synchronized (diagnosticLines) {
             diagnosticLines.add(line);
             if (diagnosticLines.size() > 80) {
@@ -107,14 +119,87 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
     }
 
     void install() throws Throwable {
-        hookWechatCallback();
-        hookOfficialSessionStore();
-        hookWechatApiInitialization();
-        hookHostLaunchIntent();
-        scheduleOfficialLoginReceiver();
+        // Secneo loads host classes only after process bootstrap. Install the
+        // independent bridge surface first; one missing SDK class must never
+        // disable HTTP, Activity lifecycle hooks or the consent UI.
         hookActivities();
+        hookHostLaunchIntent();
         LoopbackHttpServer server = new LoopbackHttpServer(registry, this);
         server.start();
+        recordDiagnostic("bridge HTTP server started");
+        scheduleHostHookProbe(0L);
+    }
+
+    /**
+     * Probe optional host integrations independently while Secneo finishes
+     * loading. The bounded retry keeps startup from creating an endless loop.
+     */
+    private void scheduleHostHookProbe(long delayMs) {
+        if (hostHooksProbeScheduled) return;
+        if (wechatCallbackHookInstalled && sessionStoreHookInstalled
+                && wechatApiHookInstalled) return;
+        hostHooksProbeScheduled = true;
+        mainHandler.postDelayed(() -> {
+            hostHooksProbeScheduled = false;
+            probeHostHooks();
+        }, delayMs);
+    }
+
+    private void probeHostHooks() {
+        long now = System.currentTimeMillis();
+        if (hostHooksProbeStartedAt == 0L) {
+            hostHooksProbeStartedAt = now;
+            recordDiagnostic("host class hook probe started");
+        }
+        hostHooksProbeAttempts++;
+        if (!wechatCallbackHookInstalled) {
+            try {
+                hookWechatCallback();
+                wechatCallbackHookInstalled = true;
+                recordDiagnostic("WeChat callback hook installed");
+            } catch (Throwable error) {
+                if (hostHooksProbeAttempts == 1) {
+                    recordDiagnostic("WeChat callback hook deferred: "
+                            + error.getClass().getSimpleName());
+                }
+            }
+        }
+        if (!sessionStoreHookInstalled) {
+            try {
+                hookOfficialSessionStore();
+                sessionStoreHookInstalled = true;
+                recordDiagnostic("official session store hook installed");
+            } catch (Throwable error) {
+                if (hostHooksProbeAttempts == 1) {
+                    recordDiagnostic("session store hook deferred: "
+                            + error.getClass().getSimpleName());
+                }
+            }
+        }
+        if (!wechatApiHookInstalled) {
+            try {
+                hookWechatApiInitialization();
+                wechatApiHookInstalled = true;
+                recordDiagnostic("WeChat API initialization hook installed");
+            } catch (Throwable error) {
+                if (hostHooksProbeAttempts == 1) {
+                    recordDiagnostic("WeChat API hook deferred: "
+                            + error.getClass().getSimpleName());
+                }
+            }
+        }
+        if (officialLoginReceiver == null) {
+            installOfficialLoginReceiver();
+        }
+        boolean ready = wechatCallbackHookInstalled && sessionStoreHookInstalled
+                && wechatApiHookInstalled;
+        if (!ready && now - hostHooksProbeStartedAt < HOST_HOOK_PROBE_TIMEOUT_MS) {
+            scheduleHostHookProbe(HOST_HOOK_PROBE_INTERVAL_MS);
+        } else if (!ready) {
+            recordDiagnostic("optional host hooks still unavailable after timeout");
+        } else {
+            recordDiagnostic("all optional host hooks installed");
+        }
     }
 
     /**
@@ -234,7 +319,6 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
                             }
                         }
                     });
-            recordDiagnostic("WeChat API initialization hook installed");
             try {
                 Object manager = XposedHelpers.callStaticMethod(
                         managerClass, "getInstance");
@@ -248,7 +332,8 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
                         + error.getClass().getSimpleName());
             }
         } catch (Throwable error) {
-            recordDiagnostic("WeChat API initialization hook unavailable: " + error);
+            throw new IllegalStateException(
+                    "WeChat API hook unavailable", error);
         }
     }
 
@@ -328,7 +413,10 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
             recordDiagnostic("official login broadcast receiver installed");
         } catch (Throwable error) {
             officialLoginReceiver = null;
-            recordDiagnostic("official login broadcast receiver unavailable: " + error);
+            if (hostHooksProbeAttempts <= 1) {
+                recordDiagnostic("official login broadcast receiver deferred: "
+                        + error.getClass().getSimpleName());
+            }
         }
     }
 
@@ -499,10 +587,9 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
                             }
                         }
                     });
-            recordDiagnostic("official session store hook installed");
         } catch (Throwable error) {
-            recordDiagnostic("session store hook unavailable: "
-                    + error.getClass().getSimpleName());
+            throw new IllegalStateException(
+                    "session store hook unavailable", error);
         }
     }
 
@@ -868,7 +955,8 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
         } catch (Throwable error) {
             // Android can reject background activity starts. The polling page
             // keeps waiting_for_host, so the user can open XTC manually.
-            XposedBridge.log(TAG + "host launch deferred: " + error.getClass().getSimpleName());
+            recordDiagnostic("host launch deferred: "
+                    + error.getClass().getSimpleName());
         }
     }
 
@@ -936,7 +1024,6 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
         View decor = activity.getWindow().getDecorView();
         return decor != null
                 && decor.isAttachedToWindow()
-                && activity.hasWindowFocus()
                 && decor.getVisibility() == View.VISIBLE
                 && decor.getWidth() > 0
                 && decor.getHeight() > 0;
