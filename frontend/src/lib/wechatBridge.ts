@@ -200,6 +200,19 @@ export async function requestWechatAuthorization({
         if (!(error instanceof WechatBridgeError) || error.status !== 404) throw error;
       }
     }
+    if (!snapshot && state && !created) {
+      // The deep link has reached XTC and may have already started WeChat.
+      // Give its loopback server a moment to register the transferred state
+      // before falling back to a new browser-owned request.
+      for (let attempt = 0; attempt < 8 && !snapshot; attempt++) {
+        await delay(250, controller.signal);
+        try {
+          snapshot = await bridgeRequest(`/v1/authorizations/${state}`, { signal: controller.signal });
+        } catch (error) {
+          if (!(error instanceof WechatBridgeError) || error.status !== 404) throw error;
+        }
+      }
+    }
     if (!snapshot) {
       if (!state) state = randomState();
       snapshot = await bridgeRequest('/v1/authorizations', {

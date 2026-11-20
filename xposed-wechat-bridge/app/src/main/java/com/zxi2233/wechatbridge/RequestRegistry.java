@@ -8,13 +8,14 @@ import java.util.Map;
 public final class RequestRegistry {
     private static final int MAX_ACTIVE_REQUESTS = 1;
     private static final long TERMINAL_RETENTION_MS = 90_000L;
+    private static final String TRANSFER_PREFIX = "jz-transfer:";
 
     private static final class Entry {
         final String state;
         final String wireState;
         final String origin;
         final long createdAt;
-        final long expiresAt;
+        long expiresAt;
         String status = AuthorizationSnapshot.WAITING_FOR_HOST;
         String accountSession;
         int wechatErrorCode;
@@ -60,6 +61,69 @@ public final class RequestRegistry {
         Entry entry = new Entry(state, normalizedOrigin, now);
         byState.put(state, entry);
         return entry.snapshot();
+    }
+
+    /**
+     * Registers the opaque state carried by a verified deep link before the
+     * browser returns. The placeholder can only be claimed by one browser
+     * origin; all normal polling and completion checks remain origin-bound.
+     */
+    public synchronized AuthorizationSnapshot acceptTransfer(String state, long now)
+            throws BridgeException {
+        if (!BridgeContract.isValidState(state)) {
+            throw new BridgeException(400, "invalid_state",
+                    "state 必须是 16-128 位 URL 安全随机字符串。");
+        }
+        purge(now);
+        Entry existing = byState.get(state);
+        if (existing != null) return existing.snapshot();
+        int active = 0;
+        for (Entry entry : byState.values()) {
+            if (!entry.snapshot().isTerminal()) {
+                if (TRANSFER_PREFIX.equals(entry.origin)) {
+                    byState.remove(entry.state);
+                    continue;
+                }
+                active++;
+            }
+        }
+        if (active >= MAX_ACTIVE_REQUESTS) {
+            throw new BridgeException(429, "too_many_requests", "已有过多待处理的授权请求。");
+        }
+        Entry entry = new Entry(state, TRANSFER_PREFIX, now);
+        byState.put(state, entry);
+        return entry.snapshot();
+    }
+
+    /**
+     * Binds a deep-link placeholder to the first browser origin that polls it.
+     * Subsequent requests from any other origin still fail closed.
+     */
+    public synchronized boolean bindTransfer(String origin, String state, long now) {
+        if (!BridgeContract.isValidState(state)) return false;
+        Entry entry = byState.get(state);
+        if (entry == null) return false;
+        expireIfNeeded(entry, now);
+        final String normalized;
+        try {
+            normalized = BridgeContract.normalizeOrigin(origin);
+        } catch (BridgeException error) {
+            return false;
+        }
+        if (TRANSFER_PREFIX.equals(entry.origin)) {
+            Entry bound = new Entry(state, normalized, entry.createdAt);
+            bound.status = entry.status;
+            bound.expiresAt = entry.expiresAt;
+            bound.accountSession = entry.accountSession;
+            bound.wechatErrorCode = entry.wechatErrorCode;
+            bound.wechatError = entry.wechatError;
+            bound.errorCode = entry.errorCode;
+            bound.errorMessage = entry.errorMessage;
+            bound.retainUntil = entry.retainUntil;
+            byState.put(state, bound);
+            return true;
+        }
+        return entry.origin.equals(normalized);
     }
 
     /** Returns waiting states repeatedly, but consumes a terminal result once. */

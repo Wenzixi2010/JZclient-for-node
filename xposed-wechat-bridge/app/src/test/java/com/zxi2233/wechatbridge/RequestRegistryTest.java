@@ -16,6 +16,19 @@ public final class RequestRegistryTest {
     private final RequestRegistry registry = new RequestRegistry();
 
     @Test
+    public void hostDeepLinkRegistersBeforeTheBrowserPolls() throws Exception {
+        registry.acceptTransfer(STATE, NOW);
+        assertTrue(registry.bindTransfer(ORIGIN, STATE, NOW + 1));
+        AuthorizationSnapshot waiting = registry.poll(ORIGIN, STATE, NOW + 1);
+        assertEquals(AuthorizationSnapshot.WAITING_FOR_HOST, waiting.status);
+        assertTrue(registry.claimWechat(
+                BridgeContract.wireState(STATE), 0, null, NOW + 2));
+        assertEquals(AuthorizationSnapshot.LOGGING_IN,
+                registry.poll(ORIGIN, STATE, NOW + 3).status);
+        assertNull(registry.poll("http://192.168.1.9:8787", STATE, NOW + 4));
+    }
+
+    @Test
     public void resultIsBoundToOriginAndConsumedOnce() throws Exception {
         registry.create(ORIGIN, STATE, NOW);
         assertNull(registry.poll("http://192.168.1.9:8787", STATE, NOW));

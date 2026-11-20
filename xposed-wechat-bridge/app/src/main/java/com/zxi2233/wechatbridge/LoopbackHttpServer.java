@@ -25,6 +25,7 @@ import java.util.Map;
 final class LoopbackHttpServer {
     interface Listener {
         void onAuthorizationCreated(String state);
+        void onAuthorizationTransferAccepted(String state);
         void onAuthorizationCancelled(String state);
         String hostVersion();
         JSONObject diagnostics();
@@ -188,6 +189,15 @@ final class LoopbackHttpServer {
             } catch (JSONException error) {
                 throw new BridgeException(400, "invalid_json", "请求 JSON 无效。");
             }
+            if (registry.bindTransfer(origin, state, System.currentTimeMillis())) {
+                AuthorizationSnapshot snapshot = registry.peek(
+                        origin, state, System.currentTimeMillis());
+                if (snapshot == null) {
+                    throw new BridgeException(404, "not_found", "授权请求不存在。");
+                }
+                listener.onAuthorizationTransferAccepted(state);
+                return new Response(202, snapshotJson(snapshot), origin);
+            }
             AuthorizationSnapshot snapshot = registry.create(origin, state, System.currentTimeMillis());
             listener.onAuthorizationCreated(state);
             return new Response(202, snapshotJson(snapshot), origin);
@@ -197,11 +207,13 @@ final class LoopbackHttpServer {
         if (path.startsWith(prefix) && path.indexOf('/', prefix.length()) < 0) {
             String state = path.substring(prefix.length());
             if ("GET".equals(request.method)) {
+                registry.bindTransfer(origin, state, System.currentTimeMillis());
                 AuthorizationSnapshot snapshot = registry.poll(origin, state, System.currentTimeMillis());
                 if (snapshot == null) return jsonError(404, "not_found", "授权请求不存在或结果已读取。", origin);
                 return new Response(200, snapshotJson(snapshot), origin);
             }
             if ("DELETE".equals(request.method)) {
+                registry.bindTransfer(origin, state, System.currentTimeMillis());
                 boolean cancelled = registry.cancel(origin, state, System.currentTimeMillis());
                 if (!cancelled) return jsonError(404, "not_found", "授权请求不存在或已结束。", origin);
                 listener.onAuthorizationCancelled(state);

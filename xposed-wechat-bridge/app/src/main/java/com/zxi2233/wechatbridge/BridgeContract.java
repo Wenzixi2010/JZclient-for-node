@@ -11,6 +11,10 @@ public final class BridgeContract {
     public static final int PORT = 38787;
     public static final long REQUEST_TTL_MS = 120_000L;
     public static final String STATE_PREFIX = "jzwb1.";
+    public static final String EXTRA_DEEP_LINK_STATE = "jz_login_bridge_state";
+    public static final String EXTRA_DEEP_LINK_ORIGIN = "jz_login_bridge_origin";
+    public static final String HOST_AUTH_ACTION =
+            HOST_PACKAGE + ".account.WECHAT_LOGIN";
 
     private static final Pattern STATE = Pattern.compile("^[A-Za-z0-9_-]{16,128}$");
 

@@ -91,11 +91,21 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void openXiaotiancai() {
-        Intent launch = getPackageManager().getLaunchIntentForPackage(
+        final Intent launch = getPackageManager().getLaunchIntentForPackage(
                 BridgeContract.HOST_PACKAGE);
         if (launch == null) {
             JzLoginBridgeState.INSTANCE.reportHostUnavailable();
             return;
+        }
+        String state = JzLoginBridgeState.INSTANCE.pendingRequest();
+        if (BridgeContract.isValidState(state)) {
+            String origin = getIntent().getData() == null
+                    ? null : getIntent().getData().getQueryParameter("origin");
+            launch.setAction(BridgeContract.HOST_AUTH_ACTION);
+            launch.putExtra(BridgeContract.EXTRA_DEEP_LINK_STATE, state);
+            if (origin != null && !origin.isEmpty()) {
+                launch.putExtra(BridgeContract.EXTRA_DEEP_LINK_ORIGIN, origin);
+            }
         }
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         try {
