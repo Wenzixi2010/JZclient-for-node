@@ -48,6 +48,7 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
     private BroadcastReceiver officialLoginReceiver;
     private volatile boolean wxApiReady;
     private int officialHostSessionRetries;
+    private volatile long confirmationGraceUntil;
 
     private void recordDiagnostic(String message) {
         String line = System.currentTimeMillis() + " " + message;
@@ -618,8 +619,13 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
 
     @Override
     public void onAuthorizationCreated(final String state) {
-        mainHandler.post(() -> mainHandler.postDelayed(
-                () -> expire(state), BridgeContract.REQUEST_TTL_MS));
+        mainHandler.post(() -> {
+            confirmationGraceUntil = Math.max(confirmationGraceUntil,
+                    System.currentTimeMillis() + 1_000L);
+            showNextConfirmation();
+            mainHandler.postDelayed(
+                    () -> expire(state), BridgeContract.REQUEST_TTL_MS);
+        });
     }
 
     @Override
@@ -700,6 +706,10 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
             return;
         }
         if (confirmationDialog != null) return;
+        if (confirmationGraceUntil > System.currentTimeMillis()) {
+            scheduleConfirmationRetry();
+            return;
+        }
         loadExistingHostSession();
         AuthorizationSnapshot request = registry.nextPending(System.currentTimeMillis());
         if (request == null) return;
@@ -754,7 +764,7 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
         mainHandler.postDelayed(() -> {
             retryScheduled = false;
             showNextConfirmation();
-        }, 700L);
+        }, 250L);
     }
 
     private void reject(String state, String code, String message) {

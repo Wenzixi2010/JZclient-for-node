@@ -43,6 +43,7 @@ export default function AccountPage() {
     if (initialPendingWechat) {
       setBusy('wechat');
       void requestWechatAuthorization({
+        resumeOnly: true,
         onStatus: setWechatStatus,
         onBridgeReady: state => {
           const opened = openLoginBridge(state);
@@ -79,10 +80,7 @@ export default function AccountPage() {
     try {
       const { session } = await requestWechatAuthorization({
         onStatus: setWechatStatus,
-        onBridgeReady: state => {
-          const opened = openLoginBridge(state);
-          setBridgeHandedOff(opened);
-        },
+        onBridgeReady: state => setBridgeHandedOff(openLoginBridge(state)),
       });
       setWechatStatus('authorizing' as WechatAuthorizationStatus);
       await post('/api/account/login/wechat', { session });
@@ -199,7 +197,7 @@ export default function AccountPage() {
           <Button type="button" variant="secondary" className="wechat-login-button" onClick={loginWithWechat} loading={busy === 'wechat'} disabled={!!busy}>
             {busy !== 'wechat' && <MessageCircle size={20} aria-hidden="true" />}{busy === 'wechat' ? (wechatText(wechatStatus) || '正在发起授权…') : '使用微信登录'}
           </Button>
-          {busy === 'wechat' && <p className="wechat-login-privacy" role="status">{bridgeHandedOff ? '已转交 JzLoginBridge，请在小天才确认后完成微信授权。返回浏览器时会继续登录。' : '正在打开 JzLoginBridge 和小天才，微信授权码不会离开宿主。'}</p>}
+          {busy === 'wechat' && <p className="wechat-login-privacy" role="status">{bridgeHandedOff ? '已打开 JzLoginBridge。JzLoginBridge 会启动小天才；返回浏览器后继续授权。' : '正在打开 JzLoginBridge，微信授权码不会离开宿主。'}</p>}
         </div>
         <div className="account-login-divider" aria-hidden="true"><span>或使用账号密码</span></div>
         <form className="account-login-form" onSubmit={login}>
