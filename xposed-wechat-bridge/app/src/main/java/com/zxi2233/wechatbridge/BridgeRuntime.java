@@ -1,8 +1,8 @@
 package com.zxi2233.wechatbridge;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.AndroidAppHelper;
-import android.app.Dialog;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -44,7 +44,7 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
     private final List<String> diagnosticLines = new ArrayList<>();
 
     private WeakReference<Activity> resumedActivity = new WeakReference<>(null);
-    private Dialog confirmationDialog;
+    private AlertDialog confirmationDialog;
     private String confirmationState;
     private boolean retryScheduled;
     private long lastHostLaunch;
@@ -1064,21 +1064,31 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
         }
 
         confirmationState = request.state;
-        final Dialog dialog;
+        AlertDialog dialog = new AlertDialog.Builder(activity)
+                .setTitle("允许网页使用微信授权？")
+                .setMessage("请求来源：\n"
+                        + safeOrigin(registry.originForInternal(request.state))
+                        + "\n\n确认后将打开小天才官方微信登录。")
+                .setNegativeButton("拒绝", (ignored, which) ->
+                        reject(request.state, "user_denied",
+                                "你已拒绝这个网页的授权请求。"))
+                .setPositiveButton("允许并打开微信", (ignored, which) ->
+                        sendWechatAuthorization(request.state))
+                .setOnCancelListener(ignored ->
+                        reject(request.state, "user_denied",
+                                "你已取消这个网页的授权请求。"))
+                .create();
+        confirmationDialog = dialog;
+        dialog.setOnDismissListener(ignored -> {
+            if (confirmationDialog == dialog) {
+                confirmationDialog = null;
+                confirmationState = null;
+            }
+        });
         try {
-            dialog = BridgeConfirmationUi.show(
-                    activity,
-                    safeOrigin(registry.originForInternal(request.state)),
-                    () -> sendWechatAuthorization(request.state),
-                    () -> reject(request.state, "user_denied",
-                            "你已取消这个网页的授权请求。"),
-                    () -> {
-                        if (confirmationDialog == null) {
-                            confirmationState = null;
-                        }
-                    });
-            confirmationDialog = dialog;
+            dialog.show();
         } catch (Throwable error) {
+            confirmationDialog = null;
             confirmationState = null;
             recordDiagnostic("confirmation UI failed: "
                     + Log.getStackTraceString(error));
@@ -1112,7 +1122,7 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
 
     private void dismissConfirmation(String state) {
         if (confirmationState == null || !confirmationState.equals(state)) return;
-        Dialog dialog = confirmationDialog;
+        AlertDialog dialog = confirmationDialog;
         confirmationDialog = null;
         confirmationState = null;
         if (dialog != null && dialog.isShowing()) dialog.dismiss();
