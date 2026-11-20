@@ -95,9 +95,74 @@ test('返回网页后即使没有 visibilitychange 也会继续取得授权结�
   assert.equal(dom.window.sessionStorage.getItem('jz_wechat_authorization'), null);
 });
 
-function json(body) {
+test('首次冷启动会等待桥接服务，而不是立刻报告连不上', async t => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    url: 'http://192.168.1.8:8787/#/account',
+    pretendToBeVisual: true,
+  });
+  installBrowserGlobals(t, dom);
+
+  const state = 'state_12345678901234567890';
+  let statusRequests = 0;
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    writable: true,
+    value: async url => {
+      if (url.endsWith('/v1/status')) {
+        if (++statusRequests < 3) throw new TypeError('network not ready');
+        return json({ ok: true });
+      }
+      if (url.endsWith('/v1/authorizations')) {
+        return json({
+          ok: true, state, status: 'waiting_for_host',
+          expiresAt: Date.now() + 60_000,
+        }, 202);
+      }
+      if (url.includes('/v1/authorizations/')) {
+        return json({
+          ok: true, state: decodeURIComponent(url.split('/').at(-1)), status: 'authorized',
+          expiresAt: Date.now() + 60_000, session: '{"ticket":"host-session"}',
+        });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    },
+  });
+
+  let opened = '';
+  const result = await bridge.requestWechatAuthorization({
+    timeoutMs: 5_000,
+    onOpenBridge: value => { opened = `jzloginbridge://authorize?state=${value}`; },
+  });
+  assert.equal(result.session, '{"ticket":"host-session"}');
+  assert.ok(statusRequests >= 3, '桥接服务启动期间持续重试');
+  assert.match(opened, /^jzloginbridge:\/\/authorize\?state=/);
+});
+
+function installBrowserGlobals(t, dom) {
+  const originals = new Map();
+  dom.window.btoa = value => Buffer.from(value, 'binary').toString('base64');
+  for (const [name, value] of [
+    ['window', dom.window],
+    ['document', dom.window.document],
+    ['sessionStorage', dom.window.sessionStorage],
+    ['crypto', dom.window.crypto],
+    ['btoa', dom.window.btoa],
+  ]) {
+    originals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    Object.defineProperty(globalThis, name, { value, writable: true, configurable: true });
+  }
+  t.after(() => {
+    dom.window.close();
+    for (const [name, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+    }
+  });
+}
+
+function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
-    status: 200,
+    status,
     headers: { 'Content-Type': 'application/json' },
   });
 }

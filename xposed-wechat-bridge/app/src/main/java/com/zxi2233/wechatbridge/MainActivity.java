@@ -109,7 +109,7 @@ public final class MainActivity extends ComponentActivity {
                 launch.putExtra(BridgeContract.EXTRA_DEEP_LINK_ORIGIN, origin);
             }
         }
-        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        launch.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
         try {
             startActivity(launch);
             JzLoginBridgeState.INSTANCE.markHostOpening();

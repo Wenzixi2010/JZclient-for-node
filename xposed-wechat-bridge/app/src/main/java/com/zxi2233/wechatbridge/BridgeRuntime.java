@@ -144,7 +144,12 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
             recordDiagnostic("host launch intent accepted, status="
                     + snapshot.status);
             activeTransferredState = state;
-            recordDiagnostic("waiting for browser to bind transferred request");
+            // Start the official login from the host process as soon as this
+            // deep link is received. Android can suspend the browser's timers
+            // while XTC is opening, so the login must not depend on the web page
+            // returning a loopback bind before it can proceed.
+            mainHandler.post(() -> launchTransferredLoginWhenReady(state));
+            recordDiagnostic("host-owned transfer started; browser binding may follow");
         } catch (BridgeException error) {
             recordDiagnostic("host launch intent rejected: " + error.code);
             registry.fail(state, error.code, error.getMessage(),
@@ -756,14 +761,46 @@ final class BridgeRuntime implements LoopbackHttpServer.Listener {
             preview.putExtra(MainActivity.EXTRA_WECHAT_ERROR, snapshot.wechatError);
             preview.putExtra(MainActivity.EXTRA_CAPTURED_AT, System.currentTimeMillis());
             preview.putExtra(MainActivity.EXTRA_HOST_VERSION, hostVersion());
-            preview.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            preview.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                    | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
             Activity activity = resumedActivity.get();
             Context launcher = activity != null && !activity.isFinishing()
                     && !activity.isDestroyed() ? activity : context;
             launcher.startActivity(preview);
             lastPreviewState = previewKey;
+            bringResultScreenToFrontAfterHostSettles();
         } catch (Throwable error) {
             recordDiagnostic("result screen could not be opened: "
+                    + error.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * XTC may update its own task after the login callback. Reuse the result
+     * activity's existing task with a plain launcher intent so those lifecycle
+     * updates do not leave the user on the host screen.
+     */
+    private void bringResultScreenToFrontAfterHostSettles() {
+        mainHandler.postDelayed(this::bringResultScreenToFront, 400L);
+        mainHandler.postDelayed(this::bringResultScreenToFront, 1_200L);
+    }
+
+    private void bringResultScreenToFront() {
+        Context context = AndroidAppHelper.currentApplication();
+        if (context == null) return;
+        Intent bring = context.getPackageManager().getLaunchIntentForPackage(
+                BridgeContract.MODULE_PACKAGE);
+        if (bring == null) return;
+        bring.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+        try {
+            context.startActivity(bring);
+        } catch (Throwable error) {
+            recordDiagnostic("result screen could not be kept in front: "
                     + error.getClass().getSimpleName());
         }
     }

@@ -17,6 +17,7 @@
             android:exported="true"
             android:label="@string/app_name"
             android:launchMode="singleTop"
+            android:taskAffinity="com.zxi2233.wechatbridge"
             android:theme="@style/Theme.JZWechatBridge">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

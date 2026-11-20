@@ -45,7 +45,7 @@ export default function AccountPage() {
       void requestWechatAuthorization({
         resumeOnly: true,
         onStatus: setWechatStatus,
-        onBridgeReady: state => {
+        onOpenBridge: state => {
           const opened = openLoginBridge(state);
           setBridgeHandedOff(opened);
         },
@@ -80,7 +80,7 @@ export default function AccountPage() {
     try {
       const { session } = await requestWechatAuthorization({
         onStatus: setWechatStatus,
-        onBridgeReady: state => setBridgeHandedOff(openLoginBridge(state)),
+        onOpenBridge: state => setBridgeHandedOff(openLoginBridge(state)),
       });
       setWechatStatus('authorizing' as WechatAuthorizationStatus);
       await post('/api/account/login/wechat', { session });
@@ -253,7 +253,7 @@ function openLoginBridge(state: string) {
 
 function wechatText(status: WechatAuthorizationStatus | '') {
   return ({
-    waiting_for_host: '正在打开小天才…',
+    waiting_for_host: '正在连接登录桥…',
     awaiting_confirmation: '请在小天才确认授权',
     launching_wechat: '正在打开微信…',
     waiting_for_wechat: '请在微信中确认…',

@@ -1,6 +1,7 @@
 const DEFAULT_BASE_URL = 'http://127.0.0.1:38787';
 const PENDING_AUTHORIZATION_KEY = 'jz_wechat_authorization';
 const PENDING_AUTHORIZATION_TTL_MS = 115_000;
+const HOST_READY_TIMEOUT_MS = 25_000;
 
 export class WechatBridgeError extends Error {
   code: string;
@@ -57,7 +58,7 @@ function savePendingAuthorization(pending: PendingAuthorization | null) {
   } catch { /* Storage is an optimization; the in-memory request still works. */ }
 }
 
-async function bridgeRequest(path: string, options: RequestInit = {}) {
+async function bridgeRequest(path: string, options: RequestInit = {}, validateBody = true) {
   let response: Response;
   try {
     response = await fetch(DEFAULT_BASE_URL + path, {
@@ -70,7 +71,7 @@ async function bridgeRequest(path: string, options: RequestInit = {}) {
     throw new WechatBridgeError('bridge_unavailable', '无法连接手机上的微信授权组件。请确认模块已启用，并重新打开小天才家长端。', { cause });
   }
   let body: any;
-  try { body = await response.json(); }
+  try { body = validateBody ? await response.json() : null; }
   catch (cause) { throw new WechatBridgeError('invalid_bridge_response', '微信授权组件返回了无法识别的响应。', { status: response.status, cause }); }
   if (!response.ok) {
     throw new WechatBridgeError(body?.error?.code || 'bridge_http_error', body?.error?.message || `微信授权组件请求失败（HTTP ${response.status}）。`, { status: response.status });
@@ -79,7 +80,7 @@ async function bridgeRequest(path: string, options: RequestInit = {}) {
 }
 
 export async function getWechatBridgeStatus(signal?: AbortSignal) {
-  return bridgeRequest('/v1/status', { signal });
+  return bridgeRequest('/v1/status', { signal }, false);
 }
 
 function delay(milliseconds: number, signal: AbortSignal) {
@@ -93,21 +94,23 @@ function delay(milliseconds: number, signal: AbortSignal) {
 async function retryBridgeRequest<T>(
   request: () => Promise<T>,
   signal: AbortSignal,
-  attempts = 12,
+  timeoutMs = 8_000,
 ) {
   let lastError: unknown;
-  for (let attempt = 0; attempt < attempts; attempt++) {
+  const startedAt = Date.now();
+  let attempt = 0;
+  while (true) {
+    attempt++;
     try {
       return await request();
     } catch (error) {
       lastError = error;
       const retryable = error instanceof WechatBridgeError
         && ['bridge_unavailable', 'invalid_bridge_response'].includes(error.code);
-      if (!retryable || attempt === attempts - 1) throw error;
-      await delay(250, signal);
+      if (!retryable || Date.now() - startedAt >= timeoutMs) throw error;
+      await delay(Math.min(1_000, 180 + attempt * 80), signal);
     }
   }
-  throw lastError;
 }
 
 export function getPendingWechatAuthorization() {
@@ -119,12 +122,14 @@ export async function requestWechatAuthorization({
   signal,
   onStatus,
   onBridgeReady,
+  onOpenBridge,
   resumeOnly = false,
   timeoutMs = 125_000,
 }: {
   signal?: AbortSignal;
   onStatus?: (status: WechatAuthorizationStatus) => void;
   onBridgeReady?: (state: string) => void;
+  onOpenBridge?: (state: string) => void;
   resumeOnly?: boolean;
   timeoutMs?: number;
 } = {}) {
@@ -166,7 +171,7 @@ export async function requestWechatAuthorization({
       handoffStarted: true,
     });
     onStatus?.('waiting_for_host');
-    onBridgeReady?.(state);
+    onOpenBridge?.(state);
     // The web page owns the result. Background timer throttling is fine here
     // because the loop resumes as soon as the page receives focus again.
     onStatus?.('waiting_for_host');
@@ -176,7 +181,13 @@ export async function requestWechatAuthorization({
     window.addEventListener('focus', visibilityChanged);
     window.addEventListener('pageshow', visibilityChanged);
     startDeadline();
-    await retryBridgeRequest(() => getWechatBridgeStatus(controller.signal), controller.signal);
+    // The HTTP bridge exists inside the XTC process. On a cold launch that
+    // process needs several seconds for Xposed injection and server startup.
+    await retryBridgeRequest(
+      () => getWechatBridgeStatus(controller.signal),
+      controller.signal,
+      HOST_READY_TIMEOUT_MS,
+    );
     let snapshot: any;
     if (resumeOnly && pending) {
       state = pending.state;
@@ -199,8 +210,9 @@ export async function requestWechatAuthorization({
       // The deep link has reached XTC and may have already started WeChat.
       // Give its loopback server a moment to register the transferred state
       // before falling back to a new browser-owned request.
-      for (let attempt = 0; attempt < 8 && !snapshot; attempt++) {
-        await delay(250, controller.signal);
+      const handoffDeadline = Date.now() + 8_000;
+      while (!snapshot && Date.now() < handoffDeadline) {
+        await delay(300, controller.signal);
         try {
           snapshot = await bridgeRequest(`/v1/authorizations/${state}`, { signal: controller.signal });
         } catch (error) {
@@ -210,10 +222,15 @@ export async function requestWechatAuthorization({
     }
     if (!snapshot) {
       if (!state) state = randomState();
-      snapshot = await retryBridgeRequest(() => bridgeRequest('/v1/authorizations', {
-        method: 'POST', body: JSON.stringify({ state }), signal: controller.signal,
-      }), controller.signal);
+      snapshot = await retryBridgeRequest(
+        () => bridgeRequest('/v1/authorizations', {
+          method: 'POST', body: JSON.stringify({ state }), signal: controller.signal,
+        }),
+        controller.signal,
+        8_000,
+      );
       created = true;
+      onBridgeReady?.(state);
     }
     savePendingAuthorization({
       state,

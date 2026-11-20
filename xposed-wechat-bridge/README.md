@@ -48,17 +48,17 @@ const { session, state } = await requestWechatAuthorization({
 jzloginbridge://authorize?state=<一次性状态>&returnUrl=<原网页地址>
 ```
 
-`JzLoginBridge` 校验状态格式后打开小天才。深链不携带账号、会话、设备标识或微信授权码。
+`JzLoginBridge` 校验状态格式后打开小天才。深链不携带账号、会话、设备标识或微信授权码。首次冷启动时，模块与 Xposed 会在小天才进程内等待微信组件初始化完成，无需先手动打开或登录小天才。网页同时会在最长 25 秒内重试连接桥接服务，避免宿主尚未启动时直接提示“连不上桥”。
 
 完整流程：
 
 1. 网页检查模块状态并生成 32 字节随机 `state`。
-2. 网页通过 `jzloginbridge://authorize` 打开模块，模块再启动小天才并显示请求来源。
+2. 网页通过 `jzloginbridge://authorize` 打开模块，模块再启动小天才。宿主进程收到一次性状态后立即等待微信组件就绪并继续官方登录，不要求浏览器在后台保持轮询。
 3. 用户确认后，模块通过宿主的 `IWXAPI.sendReq()` 打开微信。
 4. 用户在微信中授权。
 5. 桥接把微信 `code` 交给小天才宿主官方 `MobileService.wc()`。
 6. 宿主完成 SSO 换票、下载账号和手表后，桥接读取 `MobileAccount`。
-7. 成功后 JzLoginBridge 显示“请返回网页继续操作”，网页轮询取得账号会话并校验 `state`。
+7. 成功后 JzLoginBridge 显示“授权已完成，请返回网页继续操作！”，并在宿主页面更新结束时再次将模块任务置前。网页轮询取得账号会话并校验 `state`。
 
 模块不会自动切回浏览器。用户返回原网页后，网页会读取待处理结果。
 
